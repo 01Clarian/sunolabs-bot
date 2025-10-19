@@ -8,7 +8,6 @@ const bot = new TelegramBot(token, { polling: true });
 const CHANNEL = "sunolabs_submissions"; // without @
 
 // === PERSISTENT SAVE PATH ===
-// use /data/ for Render persistent disk, fallback to local
 const SAVE_FILE = fs.existsSync("/data") ? "/data/submissions.json" : "./submissions.json";
 
 let submissions = [];
@@ -52,11 +51,10 @@ bot.on("message", async (msg) => {
   // Block new entries during voting phase
   if (phase === "voting") {
     const diff = nextRoundTime ? nextRoundTime - Date.now() : 0;
-    const hours = Math.max(0, Math.floor(diff / 3600000));
-    const minutes = Math.max(0, Math.floor((diff % 3600000) / 60000));
+    const minutes = Math.max(0, Math.floor(diff / 60000));
     await bot.sendMessage(
       msg.chat.id,
-      `⚠️ Voting is live — submissions are closed!\n⏳ Next round opens in *${hours}h ${minutes}m*.`,
+      `⚠️ Voting is live — submissions are closed!\n⏳ Next round opens in *${minutes}m*.`,
       { parse_mode: "Markdown" }
     );
     return;
@@ -66,10 +64,9 @@ bot.on("message", async (msg) => {
   if (msg.audio) {
     const fileId = msg.audio.file_id;
     const now = new Date();
-    const nextRound = new Date(Math.ceil(now.getTime() / (2 * 60 * 60 * 1000)) * (2 * 60 * 60 * 1000));
+    const nextRound = new Date(Math.ceil(now.getTime() / (5 * 60 * 1000)) * (5 * 60 * 1000));
     const diffMs = nextRound - now;
-    const hoursLeft = Math.floor(diffMs / 3600000);
-    const minutesLeft = Math.floor((diffMs % 3600000) / 60000);
+    const minutesLeft = Math.floor(diffMs / 60000);
 
     submissions.push({
       user,
@@ -84,7 +81,7 @@ bot.on("message", async (msg) => {
 
     await bot.sendMessage(
       msg.chat.id,
-      `✅ Got your *audio track*! Next round posts in *${hoursLeft}h ${minutesLeft}m* — good luck 🍀`,
+      `✅ Got your *audio track*! Next round posts in *${minutesLeft}m* — good luck 🍀`,
       { parse_mode: "Markdown" }
     );
     console.log(`🎧 Audio submission from @${user} (${userId})`);
@@ -102,10 +99,9 @@ bot.on("message", async (msg) => {
 
   if (link && (link.startsWith("http://") || link.startsWith("https://"))) {
     const now = new Date();
-    const nextRound = new Date(Math.ceil(now.getTime() / (2 * 60 * 60 * 1000)) * (2 * 60 * 60 * 1000));
+    const nextRound = new Date(Math.ceil(now.getTime() / (5 * 60 * 1000)) * (5 * 60 * 1000));
     const diffMs = nextRound - now;
-    const hoursLeft = Math.floor(diffMs / 3600000);
-    const minutesLeft = Math.floor((diffMs % 3600000) / 60000);
+    const minutesLeft = Math.floor(diffMs / 60000);
 
     submissions.push({
       user,
@@ -119,7 +115,7 @@ bot.on("message", async (msg) => {
 
     await bot.sendMessage(
       msg.chat.id,
-      `✅ Got your *link submission*! Next round posts in *${hoursLeft}h ${minutesLeft}m* — good luck 🍀`,
+      `✅ Got your *link submission*! Next round posts in *${minutesLeft}m* — good luck 🍀`,
       { parse_mode: "Markdown" }
     );
     console.log(`✅ Link submission from @${user} (${userId}): ${link}`);
@@ -183,7 +179,7 @@ bot.on("callback_query", async (q) => {
   bot.answerCallbackQuery(q.id, { text: "✅ Vote recorded!" });
 });
 
-// === POST SUBMISSIONS TO CHANNEL (HTML SAFE) ===
+// === POST SUBMISSIONS TO CHANNEL (SEPARATE MESSAGES) ===
 async function postSubmissions() {
   if (submissions.length === 0) {
     console.log("🚫 No submissions to post.");
@@ -191,19 +187,17 @@ async function postSubmissions() {
   }
 
   phase = "voting";
-  nextRoundTime = new Date(Date.now() + 2 * 60 * 60 * 1000);
+  nextRoundTime = new Date(Date.now() + 5 * 60 * 1000);
   saveSubmissions();
 
   for (const s of submissions) {
     try {
-      const safeUser = s.user.replace(/</g, "&lt;").replace(/>/g, "&gt;");
-      const safeTitle = (s.title || "").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-      const safeLink = s.track.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+      const safeTitle = (s.title || "").replace(/[*_`]/g, ""); // prevent markdown breaks
 
       if (s.type === "audio") {
         await bot.sendAudio(`@${CHANNEL}`, s.track, {
-          caption: `🎧 @${safeUser} dropped a track${safeTitle ? ` — <b>${safeTitle}</b>` : ""}<br>🔥 Votes: 0`,
-          parse_mode: "HTML",
+          caption: `🎧 @${s.user} dropped a track${safeTitle ? ` — *${safeTitle}*` : ""}\n🔥 Votes: 0`,
+          parse_mode: "Markdown",
           reply_markup: {
             inline_keyboard: [[{ text: "🔥 Vote", callback_data: `vote_${s.userId}` }]]
           }
@@ -211,9 +205,9 @@ async function postSubmissions() {
       } else {
         await bot.sendMessage(
           `@${CHANNEL}`,
-          `🎧 @${safeUser} dropped a track:<br><a href="${safeLink}">${safeLink}</a><br><br>🔥 Votes: 0`,
+          `🎧 @${s.user} dropped a track:\n${s.track}\n\n🔥 Votes: 0`,
           {
-            parse_mode: "HTML",
+            parse_mode: "Markdown",
             disable_web_page_preview: true,
             reply_markup: {
               inline_keyboard: [[{ text: "🔥 Vote", callback_data: `vote_${s.userId}` }]]
@@ -221,12 +215,15 @@ async function postSubmissions() {
           }
         );
       }
+
+      // Delay to prevent merge/rate-limit
+      await new Promise((res) => setTimeout(res, 1000));
     } catch (e) {
       console.error(`❌ Failed to post @${s.user}:`, e.message);
     }
   }
 
-  console.log("✅ Posted all submissions.");
+  console.log("✅ Posted all submissions individually.");
 }
 
 // === ANNOUNCE WINNERS ===
@@ -239,7 +236,7 @@ async function announceWinners() {
   }
 
   const sorted = [...submissions].sort((a, b) => b.votes - a.votes);
-  let msg = "🏆 <b>Top Tracks of the Round</b> 🏆\n\n";
+  let msg = "🏆 *Top Tracks of the Round* 🏆\n\n";
 
   sorted.forEach((s, i) => {
     msg += `${i + 1}. @${s.user} — ${s.votes} 🔥\n`;
@@ -247,25 +244,25 @@ async function announceWinners() {
     else msg += `🎵 Audio submission\n\n`;
   });
 
-  await bot.sendMessage(`@${CHANNEL}`, msg, { parse_mode: "HTML" });
+  await bot.sendMessage(`@${CHANNEL}`, msg, { parse_mode: "Markdown" });
   console.log("✅ Winners announced.");
 
   submissions = [];
   phase = "submissions";
-  nextRoundTime = new Date(Date.now() + 2 * 60 * 60 * 1000);
+  nextRoundTime = new Date(Date.now() + 5 * 60 * 1000);
   saveSubmissions();
   console.log("♻️ Submissions cleared for next round.");
 }
 
-// === RUN CYCLE EVERY 2 HOURS ===
+// === RUN CYCLE EVERY 5 MINUTES ===
 if (!process.env.CRON_STARTED) {
   process.env.CRON_STARTED = true;
-cron.schedule("*/5 * * * *", async () => {
-  console.log("⏰ Starting a new 5-minute cycle...");
-  await postSubmissions();
-  setTimeout(announceWinners, 5 * 60 * 1000);
-});
+  cron.schedule("*/5 * * * *", async () => {
+    console.log("⏰ Starting a new 5-minute cycle...");
+    await postSubmissions();
+    setTimeout(announceWinners, 5 * 60 * 1000);
+  });
 }
 
-console.log("✅ SunoLabs Bot (2-hour persistent mode, HTML-safe link+audio) is running...");
+console.log("✅ SunoLabs Bot (5-minute persistent mode, Markdown-safe link+audio) is running...");
 
