@@ -6,10 +6,28 @@ const bot = new TelegramBot(token, { polling: true });
 
 const CHANNEL = "sunolabs_submissions"; // without @
 let submissions = [];
+let phase = "submissions"; // "submissions" | "voting"
+let nextRoundTime = null;
 
 // === HANDLE DM SUBMISSIONS ===
 bot.on("message", async (msg) => {
   if (msg.chat.type !== "private") return;
+
+  // Prevent Telegram from re-triggering on non-user messages
+  if (!msg.text && !msg.audio) return;
+
+  // If it's the voting phase, block new entries
+  if (phase === "voting") {
+    const diff = nextRoundTime ? nextRoundTime - Date.now() : 0;
+    const hours = Math.max(0, Math.floor(diff / 3600000));
+    const minutes = Math.max(0, Math.floor((diff % 3600000) / 60000));
+    await bot.sendMessage(
+      msg.chat.id,
+      `⚠️ Voting is live right now — submissions are closed!\n⏳ Next round opens in *${hours}h ${minutes}m*.`,
+      { parse_mode: "Markdown" }
+    );
+    return;
+  }
 
   const user = msg.from.username || msg.from.first_name;
 
@@ -17,12 +35,12 @@ bot.on("message", async (msg) => {
   if (msg.audio) {
     const fileId = msg.audio.file_id;
 
-    // calculate time left dynamically (2-minute rounds)
+    // calculate time left dynamically until next round
     const now = new Date();
-    const nextRound = new Date(Math.ceil(now.getTime() / (2 * 60 * 1000)) * (2 * 60 * 1000));
+    const nextRound = new Date(Math.ceil(now.getTime() / (2 * 60 * 60 * 1000)) * (2 * 60 * 60 * 1000));
     const diffMs = nextRound - now;
-    const minutesLeft = Math.floor(diffMs / 60000);
-    const secondsLeft = Math.floor((diffMs % 60000) / 1000);
+    const hoursLeft = Math.floor(diffMs / 3600000);
+    const minutesLeft = Math.floor((diffMs % 3600000) / 60000);
 
     submissions.push({
       user,
@@ -35,7 +53,7 @@ bot.on("message", async (msg) => {
 
     await bot.sendMessage(
       msg.chat.id,
-      `✅ Got your *audio track*! Next round posts in *${minutesLeft}m ${secondsLeft}s* — good luck 🍀`,
+      `✅ Got your *audio track*! Next round posts in *${hoursLeft}h ${minutesLeft}m* — good luck 🍀`,
       { parse_mode: "Markdown" }
     );
     console.log(`🎧 Audio submission from @${user}`);
@@ -46,10 +64,10 @@ bot.on("message", async (msg) => {
   const link = msg.text?.trim();
   if (link?.startsWith("http")) {
     const now = new Date();
-    const nextRound = new Date(Math.ceil(now.getTime() / (2 * 60 * 1000)) * (2 * 60 * 1000));
+    const nextRound = new Date(Math.ceil(now.getTime() / (2 * 60 * 60 * 1000)) * (2 * 60 * 60 * 1000));
     const diffMs = nextRound - now;
-    const minutesLeft = Math.floor(diffMs / 60000);
-    const secondsLeft = Math.floor((diffMs % 60000) / 1000);
+    const hoursLeft = Math.floor(diffMs / 3600000);
+    const minutesLeft = Math.floor((diffMs % 3600000) / 60000);
 
     submissions.push({
       user,
@@ -61,7 +79,7 @@ bot.on("message", async (msg) => {
 
     await bot.sendMessage(
       msg.chat.id,
-      `✅ Got your *link submission*! Next round posts in *${minutesLeft}m ${secondsLeft}s* — good luck 🍀`,
+      `✅ Got your *link submission*! Next round posts in *${hoursLeft}h ${minutesLeft}m* — good luck 🍀`,
       { parse_mode: "Markdown" }
     );
     console.log(`✅ Link submission from @${user}: ${link}`);
@@ -134,6 +152,9 @@ async function postSubmissions() {
     return;
   }
 
+  phase = "voting";
+  nextRoundTime = new Date(Date.now() + 2 * 60 * 60 * 1000); // 2 hours ahead
+
   for (const s of submissions) {
     if (s.type === "audio") {
       await bot.sendAudio(`@${CHANNEL}`, s.track, {
@@ -163,14 +184,14 @@ async function postSubmissions() {
 async function announceWinners() {
   if (submissions.length === 0) {
     console.log("🚫 No submissions to tally.");
+    phase = "submissions";
     return;
   }
 
   const sorted = [...submissions].sort((a, b) => b.votes - a.votes);
-  const top = sorted.slice(0, 3);
   let msg = "🏆 *Top Tracks of the Round* 🏆\n\n";
 
-  top.forEach((s, i) => {
+  sorted.forEach((s, i) => {
     msg += `${i + 1}. @${s.user} — ${s.votes} 🔥\n`;
     if (s.type === "link") msg += `${s.track}\n\n`;
     else msg += `🎵 Audio submission\n\n`;
@@ -180,15 +201,16 @@ async function announceWinners() {
   console.log("✅ Winners announced.");
 
   submissions = []; // clear for next round
+  phase = "submissions";
+  nextRoundTime = new Date(Date.now() + 2 * 60 * 60 * 1000);
   console.log("♻️ Submissions cleared for next round.");
 }
 
-// === RUN TEST CYCLE EVERY 2 MINUTES ===
-cron.schedule("*/2 * * * *", async () => {
-  console.log("⏰ Starting a new 2-minute cycle...");
+// === RUN CYCLE EVERY 2 HOURS ===
+cron.schedule("0 */2 * * *", async () => {
+  console.log("⏰ Starting a new 2-hour cycle...");
   await postSubmissions();
-  setTimeout(announceWinners, 2 * 60 * 1000);
+  setTimeout(announceWinners, 2 * 60 * 60 * 1000); // wait 2 hours
 });
 
-console.log("✅ SunoLabs Bot (2-min test mode, live votes) is running...");
-
+console.log("✅ SunoLabs Bot (2-hour mode, live votes) is running...");
