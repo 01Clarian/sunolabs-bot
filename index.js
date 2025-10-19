@@ -4,7 +4,7 @@ import cron from "node-cron";
 const token = process.env.BOT_TOKEN;
 const bot = new TelegramBot(token, { polling: true });
 
-const CHANNEL = "sunolabs"; // without @
+const CHANNEL = "sunolabs_submissions"; // without @
 let submissions = [];
 
 // Handle DM submissions (accepts links OR uploaded audio)
@@ -141,7 +141,7 @@ async function announceWinners() {
 // Run a full 10-minute test cycle
 // Posts submissions, waits 10 minutes, then announces winners
 cron.schedule("*/10 * * * *", async () => {
-  console.log("⏰ Starting a new 10-minute test cycle...");
+  console.log("⏰ Starting a new 10-minute cycle...");
   await postSubmissions();
   setTimeout(announceWinners, 10 * 60 * 1000); // wait 10 minutes
 });
