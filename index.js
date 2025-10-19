@@ -6,16 +6,21 @@ import fs from "fs";
 const token = process.env.BOT_TOKEN;
 const bot = new TelegramBot(token, { polling: true });
 const CHANNEL = "sunolabs_submissions"; // without @
-const SAVE_FILE = "./submissions.json";
+
+// === PERSISTENT SAVE PATH ===
+// use /data/ for Render persistent disk, fallback to local
+const SAVE_FILE = fs.existsSync("/data") ? "/data/submissions.json" : "./submissions.json";
 
 let submissions = [];
 let phase = "submissions"; // "submissions" | "voting"
 let nextRoundTime = null;
 
+console.log("🚀 SunoLabs Bot process started at", new Date().toISOString());
+
 // === PERSISTENCE ===
 function saveSubmissions() {
   try {
-    fs.writeFileSync(SAVE_FILE, JSON.stringify(submissions, null, 2));
+    fs.writeFileSync(SAVE_FILE, JSON.stringify({ submissions, phase, nextRoundTime }, null, 2));
   } catch (err) {
     console.error("⚠️ Failed to save submissions:", err.message);
   }
@@ -24,8 +29,11 @@ function saveSubmissions() {
 function loadSubmissions() {
   if (fs.existsSync(SAVE_FILE)) {
     try {
-      submissions = JSON.parse(fs.readFileSync(SAVE_FILE));
-      console.log(`💾 Loaded ${submissions.length} saved submissions`);
+      const data = JSON.parse(fs.readFileSync(SAVE_FILE));
+      submissions = data.submissions || [];
+      phase = data.phase || "submissions";
+      nextRoundTime = data.nextRoundTime || null;
+      console.log(`💾 Loaded ${submissions.length} saved submissions (phase: ${phase})`);
     } catch (err) {
       console.error("⚠️ Failed to load saved submissions:", err.message);
     }
@@ -37,6 +45,9 @@ loadSubmissions();
 bot.on("message", async (msg) => {
   if (msg.chat.type !== "private") return;
   if (!msg.text && !msg.audio) return;
+
+  const user = msg.from.username || msg.from.first_name;
+  const userId = msg.from.id;
 
   // Block new entries during voting phase
   if (phase === "voting") {
@@ -51,21 +62,18 @@ bot.on("message", async (msg) => {
     return;
   }
 
-  const user = msg.from.username || msg.from.first_name;
-
   // === AUDIO SUBMISSION ===
   if (msg.audio) {
     const fileId = msg.audio.file_id;
     const now = new Date();
-    const nextRound = new Date(
-      Math.ceil(now.getTime() / (2 * 60 * 60 * 1000)) * (2 * 60 * 60 * 1000)
-    );
+    const nextRound = new Date(Math.ceil(now.getTime() / (2 * 60 * 60 * 1000)) * (2 * 60 * 60 * 1000));
     const diffMs = nextRound - now;
     const hoursLeft = Math.floor(diffMs / 3600000);
     const minutesLeft = Math.floor((diffMs % 3600000) / 60000);
 
     submissions.push({
       user,
+      userId,
       type: "audio",
       track: fileId,
       title: msg.audio.file_name || "Untitled Track",
@@ -79,23 +87,29 @@ bot.on("message", async (msg) => {
       `✅ Got your *audio track*! Next round posts in *${hoursLeft}h ${minutesLeft}m* — good luck 🍀`,
       { parse_mode: "Markdown" }
     );
-    console.log(`🎧 Audio submission from @${user}`);
+    console.log(`🎧 Audio submission from @${user} (${userId})`);
     return;
   }
 
-  // === LINK SUBMISSION ===
-  const link = msg.text?.trim();
-  if (link?.startsWith("http")) {
+  // === LINK SUBMISSION (handles entities + text) ===
+  let link = msg.text?.trim();
+  if (!link && msg.entities) {
+    const entity = msg.entities.find((e) => e.type === "url");
+    if (entity && msg.text) {
+      link = msg.text.slice(entity.offset, entity.offset + entity.length);
+    }
+  }
+
+  if (link && (link.startsWith("http://") || link.startsWith("https://"))) {
     const now = new Date();
-    const nextRound = new Date(
-      Math.ceil(now.getTime() / (2 * 60 * 60 * 1000)) * (2 * 60 * 60 * 1000)
-    );
+    const nextRound = new Date(Math.ceil(now.getTime() / (2 * 60 * 60 * 1000)) * (2 * 60 * 60 * 1000));
     const diffMs = nextRound - now;
     const hoursLeft = Math.floor(diffMs / 3600000);
     const minutesLeft = Math.floor((diffMs % 3600000) / 60000);
 
     submissions.push({
       user,
+      userId,
       type: "link",
       track: link,
       votes: 0,
@@ -108,7 +122,7 @@ bot.on("message", async (msg) => {
       `✅ Got your *link submission*! Next round posts in *${hoursLeft}h ${minutesLeft}m* — good luck 🍀`,
       { parse_mode: "Markdown" }
     );
-    console.log(`✅ Link submission from @${user}: ${link}`);
+    console.log(`✅ Link submission from @${user} (${userId}): ${link}`);
     return;
   }
 
@@ -122,9 +136,10 @@ bot.on("message", async (msg) => {
 
 // === HANDLE 🔥 VOTES ===
 bot.on("callback_query", async (q) => {
-  const [action, username] = q.data.split("_");
-  const voter = q.from.username;
-  const entry = submissions.find((s) => s.user === username);
+  const [action, userIdStr] = q.data.split("_");
+  const userId = Number(userIdStr);
+  const voter = q.from.username || q.from.first_name;
+  const entry = submissions.find((s) => s.userId === userId);
   if (!entry) return;
 
   if (entry.voters.includes(voter)) {
@@ -134,7 +149,7 @@ bot.on("callback_query", async (q) => {
   entry.votes++;
   entry.voters.push(voter);
   saveSubmissions();
-  console.log(`🔥 ${voter} voted for @${username}`);
+  console.log(`🔥 ${voter} voted for ${entry.user} (${entry.userId})`);
 
   try {
     const text =
@@ -148,7 +163,7 @@ bot.on("callback_query", async (q) => {
         message_id: q.message.message_id,
         parse_mode: "Markdown",
         reply_markup: {
-          inline_keyboard: [[{ text: "🔥 Vote", callback_data: `vote_${entry.user}` }]]
+          inline_keyboard: [[{ text: "🔥 Vote", callback_data: `vote_${entry.userId}` }]]
         }
       });
     } else {
@@ -157,7 +172,7 @@ bot.on("callback_query", async (q) => {
         message_id: q.message.message_id,
         parse_mode: "Markdown",
         reply_markup: {
-          inline_keyboard: [[{ text: "🔥 Vote", callback_data: `vote_${entry.user}` }]]
+          inline_keyboard: [[{ text: "🔥 Vote", callback_data: `vote_${entry.userId}` }]]
         }
       });
     }
@@ -168,7 +183,7 @@ bot.on("callback_query", async (q) => {
   bot.answerCallbackQuery(q.id, { text: "✅ Vote recorded!" });
 });
 
-// === POST SUBMISSIONS TO CHANNEL ===
+// === POST SUBMISSIONS TO CHANNEL (HTML SAFE) ===
 async function postSubmissions() {
   if (submissions.length === 0) {
     console.log("🚫 No submissions to post.");
@@ -181,22 +196,27 @@ async function postSubmissions() {
 
   for (const s of submissions) {
     try {
+      const safeUser = s.user.replace(/</g, "&lt;").replace(/>/g, "&gt;");
+      const safeTitle = (s.title || "").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+      const safeLink = s.track.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
       if (s.type === "audio") {
         await bot.sendAudio(`@${CHANNEL}`, s.track, {
-          caption: `🎧 @${s.user} dropped a track${s.title ? ` — *${s.title}*` : ""}\n🔥 Votes: 0`,
-          parse_mode: "Markdown",
+          caption: `🎧 @${safeUser} dropped a track${safeTitle ? ` — <b>${safeTitle}</b>` : ""}<br>🔥 Votes: 0`,
+          parse_mode: "HTML",
           reply_markup: {
-            inline_keyboard: [[{ text: "🔥 Vote", callback_data: `vote_${s.user}` }]]
+            inline_keyboard: [[{ text: "🔥 Vote", callback_data: `vote_${s.userId}` }]]
           }
         });
       } else {
         await bot.sendMessage(
           `@${CHANNEL}`,
-          `🎧 @${s.user} dropped a track:\n${s.track}\n\n🔥 Votes: 0`,
+          `🎧 @${safeUser} dropped a track:<br><a href="${safeLink}">${safeLink}</a><br><br>🔥 Votes: 0`,
           {
-            parse_mode: "Markdown",
+            parse_mode: "HTML",
+            disable_web_page_preview: true,
             reply_markup: {
-              inline_keyboard: [[{ text: "🔥 Vote", callback_data: `vote_${s.user}` }]]
+              inline_keyboard: [[{ text: "🔥 Vote", callback_data: `vote_${s.userId}` }]]
             }
           }
         );
@@ -205,6 +225,7 @@ async function postSubmissions() {
       console.error(`❌ Failed to post @${s.user}:`, e.message);
     }
   }
+
   console.log("✅ Posted all submissions.");
 }
 
@@ -218,7 +239,7 @@ async function announceWinners() {
   }
 
   const sorted = [...submissions].sort((a, b) => b.votes - a.votes);
-  let msg = "🏆 *Top Tracks of the Round* 🏆\n\n";
+  let msg = "🏆 <b>Top Tracks of the Round</b> 🏆\n\n";
 
   sorted.forEach((s, i) => {
     msg += `${i + 1}. @${s.user} — ${s.votes} 🔥\n`;
@@ -226,7 +247,7 @@ async function announceWinners() {
     else msg += `🎵 Audio submission\n\n`;
   });
 
-  await bot.sendMessage(`@${CHANNEL}`, msg, { parse_mode: "Markdown" });
+  await bot.sendMessage(`@${CHANNEL}`, msg, { parse_mode: "HTML" });
   console.log("✅ Winners announced.");
 
   submissions = [];
@@ -239,11 +260,12 @@ async function announceWinners() {
 // === RUN CYCLE EVERY 2 HOURS ===
 if (!process.env.CRON_STARTED) {
   process.env.CRON_STARTED = true;
-  cron.schedule("0 */2 * * *", async () => {
-    console.log("⏰ Starting a new 2-hour cycle...");
-    await postSubmissions();
-    setTimeout(announceWinners, 2 * 60 * 60 * 1000);
-  });
+cron.schedule("*/5 * * * *", async () => {
+  console.log("⏰ Starting a new 5-minute cycle...");
+  await postSubmissions();
+  setTimeout(announceWinners, 5 * 60 * 1000);
+});
 }
 
-console.log("✅ SunoLabs Bot (2-hour persistent mode, live votes) is running...");
+console.log("✅ SunoLabs Bot (2-hour persistent mode, HTML-safe link+audio) is running...");
+
