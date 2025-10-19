@@ -52,10 +52,10 @@ bot.on("message", async (msg) => {
 
   if (phase === "voting") {
     const diff = nextRoundTime ? nextRoundTime - Date.now() : 0;
-    const minutes = Math.max(0, Math.floor(diff / 60000));
+    const hours = Math.max(0, Math.floor(diff / 3600000));
     await bot.sendMessage(
       msg.chat.id,
-      `⚠️ Voting is live — submissions closed.\n⏳ Next round opens in *${minutes}m*.`,
+      `⚠️ Voting is live — submissions closed.\n⏳ Next round opens in *${hours}h*.`,
       { parse_mode: "Markdown" }
     );
     return;
@@ -73,9 +73,9 @@ bot.on("message", async (msg) => {
 
   const fileId = msg.audio.file_id;
   const now = new Date();
-  const nextRound = new Date(Math.ceil(now.getTime() / (10 * 60 * 1000)) * (10 * 60 * 1000));
+  const nextRound = new Date(Math.ceil(now.getTime() / (24 * 60 * 60 * 1000)) * (24 * 60 * 60 * 1000));
   const diffMs = nextRound - now;
-  const minutesLeft = Math.floor(diffMs / 60000);
+  const hoursLeft = Math.floor(diffMs / 3600000);
 
   submissions.push({
     user,
@@ -89,7 +89,7 @@ bot.on("message", async (msg) => {
 
   await bot.sendMessage(
     msg.chat.id,
-    `✅ Got your *audio track*! Next round posts in *${minutesLeft}m*.`,
+    `✅ Got your *audio track*! Next round posts in *${hoursLeft}h*.`,
     { parse_mode: "Markdown" }
   );
   console.log(`🎧 Audio submission from ${user} (${userId})`);
@@ -136,7 +136,7 @@ async function postSubmissions() {
   }
 
   phase = "voting";
-  nextRoundTime = new Date(Date.now() + 5 * 60 * 1000);
+  nextRoundTime = new Date(Date.now() + 12 * 60 * 60 * 1000); // 12 h voting window
   saveSubmissions();
 
   for (const s of submissions) {
@@ -148,7 +148,7 @@ async function postSubmissions() {
           inline_keyboard: [[{ text: "🔥 Vote", callback_data: `vote_${s.userId}` }]],
         },
       });
-      await new Promise((res) => setTimeout(res, 1200));
+      await new Promise((res) => setTimeout(res, 1500));
     } catch (e) {
       console.error(`❌ Failed to post ${s.user}:`, e.message);
       await bot.sendMessage(
@@ -172,7 +172,7 @@ async function announceWinners() {
   }
 
   const sorted = [...submissions].sort((a, b) => b.votes - a.votes);
-  let msg = "🏆 *Top Tracks of the Round* 🏆\n\n";
+  let msg = "🏆 *Top Tracks of the Day* 🏆\n\n";
 
   sorted.forEach((s, i) => {
     msg += `${i + 1}. ${s.user} — ${s.votes} 🔥\n🎵 ${s.title}\n\n`;
@@ -183,25 +183,25 @@ async function announceWinners() {
 
   submissions = [];
   phase = "submissions";
-  nextRoundTime = new Date(Date.now() + 5 * 60 * 1000);
+  nextRoundTime = new Date(Date.now() + 24 * 60 * 60 * 1000);
   saveSubmissions();
-  console.log("♻️ Cleared submissions for next round.");
+  console.log("♻️ Cleared submissions for next day.");
 }
 
-// === RUN CYCLE (10-MIN ROUND) ===
+// === RUN DAILY CYCLE ===
 if (!process.env.CRON_STARTED) {
   process.env.CRON_STARTED = true;
-  cron.schedule("*/10 * * * *", async () => {
-    console.log("🎬 New round started...");
+  cron.schedule("0 0 * * *", async () => {   // every midnight UTC
+    console.log("🎬 Starting daily cycle...");
     await postSubmissions();
 
-    // Announce winners 5 minutes later (after voting window)
+    // Announce winners 12 hours later
     setTimeout(async () => {
-      console.log("🕒 Ending round — announcing winners...");
+      console.log("🕒 Announcing daily winners...");
       await announceWinners();
-    }, 5 * 60 * 1000);
+    }, 12 * 60 * 60 * 1000);
   });
 }
 
-console.log("✅ SunoLabs Bot (audio-only, clean timing + escaped usernames) is running...");
+console.log("✅ SunoLabs Bot (24 h daily round, audio-only) is running...");
 
