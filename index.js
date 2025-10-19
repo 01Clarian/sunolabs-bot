@@ -179,7 +179,7 @@ bot.on("callback_query", async (q) => {
   bot.answerCallbackQuery(q.id, { text: "✅ Vote recorded!" });
 });
 
-// === POST SUBMISSIONS TO CHANNEL (SEPARATE MESSAGES) ===
+// === POST SUBMISSIONS TO CHANNEL (ONE MESSAGE PER ENTRY) ===
 async function postSubmissions() {
   if (submissions.length === 0) {
     console.log("🚫 No submissions to post.");
@@ -192,16 +192,31 @@ async function postSubmissions() {
 
   for (const s of submissions) {
     try {
-      const safeTitle = (s.title || "").replace(/[*_`]/g, ""); // prevent markdown breaks
+      const caption = `🎧 @${s.user} dropped a track${s.title ? ` — *${s.title}*` : ""}\n🔥 Votes: 0`;
 
       if (s.type === "audio") {
-        await bot.sendAudio(`@${CHANNEL}`, s.track, {
-          caption: `🎧 @${s.user} dropped a track${safeTitle ? ` — *${safeTitle}*` : ""}\n🔥 Votes: 0`,
-          parse_mode: "Markdown",
-          reply_markup: {
-            inline_keyboard: [[{ text: "🔥 Vote", callback_data: `vote_${s.userId}` }]]
-          }
-        });
+        try {
+          // try sending as document first (more reliable than sendAudio)
+          await bot.sendDocument(`@${CHANNEL}`, s.track, {
+            caption,
+            parse_mode: "Markdown",
+            reply_markup: {
+              inline_keyboard: [[{ text: "🔥 Vote", callback_data: `vote_${s.userId}` }]]
+            }
+          });
+        } catch (err) {
+          console.error(`❌ sendDocument failed for @${s.user}: ${err.message}`);
+          await bot.sendMessage(
+            `@${CHANNEL}`,
+            `🎧 @${s.user} dropped a track (could not reupload)\n🎵 [Open Track](https://t.me/${s.user})\n🔥 Votes: 0`,
+            {
+              parse_mode: "Markdown",
+              reply_markup: {
+                inline_keyboard: [[{ text: "🔥 Vote", callback_data: `vote_${s.userId}` }]]
+              }
+            }
+          );
+        }
       } else {
         await bot.sendMessage(
           `@${CHANNEL}`,
@@ -216,15 +231,16 @@ async function postSubmissions() {
         );
       }
 
-      // Delay to prevent merge/rate-limit
-      await new Promise((res) => setTimeout(res, 1000));
+      // Small delay to keep Telegram from merging messages
+      await new Promise((res) => setTimeout(res, 1200));
     } catch (e) {
       console.error(`❌ Failed to post @${s.user}:`, e.message);
     }
   }
 
-  console.log("✅ Posted all submissions individually.");
+  console.log("✅ Posted all submissions separately and ready for voting.");
 }
+
 
 // === ANNOUNCE WINNERS ===
 async function announceWinners() {
