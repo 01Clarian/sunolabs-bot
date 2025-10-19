@@ -1,29 +1,51 @@
 import TelegramBot from "node-telegram-bot-api";
 import cron from "node-cron";
+import fs from "fs";
 
+// === CONFIG ===
 const token = process.env.BOT_TOKEN;
 const bot = new TelegramBot(token, { polling: true });
-
 const CHANNEL = "sunolabs_submissions"; // without @
+const SAVE_FILE = "./submissions.json";
+
 let submissions = [];
 let phase = "submissions"; // "submissions" | "voting"
 let nextRoundTime = null;
 
+// === PERSISTENCE ===
+function saveSubmissions() {
+  try {
+    fs.writeFileSync(SAVE_FILE, JSON.stringify(submissions, null, 2));
+  } catch (err) {
+    console.error("⚠️ Failed to save submissions:", err.message);
+  }
+}
+
+function loadSubmissions() {
+  if (fs.existsSync(SAVE_FILE)) {
+    try {
+      submissions = JSON.parse(fs.readFileSync(SAVE_FILE));
+      console.log(`💾 Loaded ${submissions.length} saved submissions`);
+    } catch (err) {
+      console.error("⚠️ Failed to load saved submissions:", err.message);
+    }
+  }
+}
+loadSubmissions();
+
 // === HANDLE DM SUBMISSIONS ===
 bot.on("message", async (msg) => {
   if (msg.chat.type !== "private") return;
-
-  // Prevent Telegram from re-triggering on non-user messages
   if (!msg.text && !msg.audio) return;
 
-  // If it's the voting phase, block new entries
+  // Block new entries during voting phase
   if (phase === "voting") {
     const diff = nextRoundTime ? nextRoundTime - Date.now() : 0;
     const hours = Math.max(0, Math.floor(diff / 3600000));
     const minutes = Math.max(0, Math.floor((diff % 3600000) / 60000));
     await bot.sendMessage(
       msg.chat.id,
-      `⚠️ Voting is live right now — submissions are closed!\n⏳ Next round opens in *${hours}h ${minutes}m*.`,
+      `⚠️ Voting is live — submissions are closed!\n⏳ Next round opens in *${hours}h ${minutes}m*.`,
       { parse_mode: "Markdown" }
     );
     return;
@@ -34,10 +56,10 @@ bot.on("message", async (msg) => {
   // === AUDIO SUBMISSION ===
   if (msg.audio) {
     const fileId = msg.audio.file_id;
-
-    // calculate time left dynamically until next round
     const now = new Date();
-    const nextRound = new Date(Math.ceil(now.getTime() / (2 * 60 * 60 * 1000)) * (2 * 60 * 60 * 1000));
+    const nextRound = new Date(
+      Math.ceil(now.getTime() / (2 * 60 * 60 * 1000)) * (2 * 60 * 60 * 1000)
+    );
     const diffMs = nextRound - now;
     const hoursLeft = Math.floor(diffMs / 3600000);
     const minutesLeft = Math.floor((diffMs % 3600000) / 60000);
@@ -50,6 +72,7 @@ bot.on("message", async (msg) => {
       votes: 0,
       voters: []
     });
+    saveSubmissions();
 
     await bot.sendMessage(
       msg.chat.id,
@@ -64,7 +87,9 @@ bot.on("message", async (msg) => {
   const link = msg.text?.trim();
   if (link?.startsWith("http")) {
     const now = new Date();
-    const nextRound = new Date(Math.ceil(now.getTime() / (2 * 60 * 60 * 1000)) * (2 * 60 * 60 * 1000));
+    const nextRound = new Date(
+      Math.ceil(now.getTime() / (2 * 60 * 60 * 1000)) * (2 * 60 * 60 * 1000)
+    );
     const diffMs = nextRound - now;
     const hoursLeft = Math.floor(diffMs / 3600000);
     const minutesLeft = Math.floor((diffMs % 3600000) / 60000);
@@ -76,6 +101,7 @@ bot.on("message", async (msg) => {
       votes: 0,
       voters: []
     });
+    saveSubmissions();
 
     await bot.sendMessage(
       msg.chat.id,
@@ -101,42 +127,39 @@ bot.on("callback_query", async (q) => {
   const entry = submissions.find((s) => s.user === username);
   if (!entry) return;
 
-  // prevent multiple votes from same user
   if (entry.voters.includes(voter)) {
     return bot.answerCallbackQuery(q.id, { text: "⚠️ You already voted for this track." });
   }
 
-  // register new vote
   entry.votes++;
   entry.voters.push(voter);
+  saveSubmissions();
   console.log(`🔥 ${voter} voted for @${username}`);
 
-  // visually update caption/text
   try {
+    const text =
+      entry.type === "audio"
+        ? `🎧 @${entry.user} dropped a track${entry.title ? ` — *${entry.title}*` : ""}\n🔥 Votes: ${entry.votes}`
+        : `🎧 @${entry.user} dropped a track:\n${entry.track}\n\n🔥 Votes: ${entry.votes}`;
+
     if (entry.type === "audio") {
-      await bot.editMessageCaption(
-        `🎧 @${entry.user} dropped a track${entry.title ? ` — *${entry.title}*` : ""}\n🔥 Votes: ${entry.votes}`,
-        {
-          chat_id: q.message.chat.id,
-          message_id: q.message.message_id,
-          parse_mode: "Markdown",
-          reply_markup: {
-            inline_keyboard: [[{ text: "🔥 Vote", callback_data: `vote_${entry.user}` }]]
-          }
+      await bot.editMessageCaption(text, {
+        chat_id: q.message.chat.id,
+        message_id: q.message.message_id,
+        parse_mode: "Markdown",
+        reply_markup: {
+          inline_keyboard: [[{ text: "🔥 Vote", callback_data: `vote_${entry.user}` }]]
         }
-      );
+      });
     } else {
-      await bot.editMessageText(
-        `🎧 @${entry.user} dropped a track:\n${entry.track}\n\n🔥 Votes: ${entry.votes}`,
-        {
-          chat_id: q.message.chat.id,
-          message_id: q.message.message_id,
-          parse_mode: "Markdown",
-          reply_markup: {
-            inline_keyboard: [[{ text: "🔥 Vote", callback_data: `vote_${entry.user}` }]]
-          }
+      await bot.editMessageText(text, {
+        chat_id: q.message.chat.id,
+        message_id: q.message.message_id,
+        parse_mode: "Markdown",
+        reply_markup: {
+          inline_keyboard: [[{ text: "🔥 Vote", callback_data: `vote_${entry.user}` }]]
         }
-      );
+      });
     }
   } catch (e) {
     console.error("Edit failed:", e.message);
@@ -153,28 +176,33 @@ async function postSubmissions() {
   }
 
   phase = "voting";
-  nextRoundTime = new Date(Date.now() + 2 * 60 * 60 * 1000); // 2 hours ahead
+  nextRoundTime = new Date(Date.now() + 2 * 60 * 60 * 1000);
+  saveSubmissions();
 
   for (const s of submissions) {
-    if (s.type === "audio") {
-      await bot.sendAudio(`@${CHANNEL}`, s.track, {
-        caption: `🎧 @${s.user} dropped a track${s.title ? ` — *${s.title}*` : ""}\n🔥 Votes: 0`,
-        parse_mode: "Markdown",
-        reply_markup: {
-          inline_keyboard: [[{ text: "🔥 Vote", callback_data: `vote_${s.user}` }]]
-        }
-      });
-    } else {
-      await bot.sendMessage(
-        `@${CHANNEL}`,
-        `🎧 @${s.user} dropped a track:\n${s.track}\n\n🔥 Votes: 0`,
-        {
+    try {
+      if (s.type === "audio") {
+        await bot.sendAudio(`@${CHANNEL}`, s.track, {
+          caption: `🎧 @${s.user} dropped a track${s.title ? ` — *${s.title}*` : ""}\n🔥 Votes: 0`,
           parse_mode: "Markdown",
           reply_markup: {
             inline_keyboard: [[{ text: "🔥 Vote", callback_data: `vote_${s.user}` }]]
           }
-        }
-      );
+        });
+      } else {
+        await bot.sendMessage(
+          `@${CHANNEL}`,
+          `🎧 @${s.user} dropped a track:\n${s.track}\n\n🔥 Votes: 0`,
+          {
+            parse_mode: "Markdown",
+            reply_markup: {
+              inline_keyboard: [[{ text: "🔥 Vote", callback_data: `vote_${s.user}` }]]
+            }
+          }
+        );
+      }
+    } catch (e) {
+      console.error(`❌ Failed to post @${s.user}:`, e.message);
     }
   }
   console.log("✅ Posted all submissions.");
@@ -185,6 +213,7 @@ async function announceWinners() {
   if (submissions.length === 0) {
     console.log("🚫 No submissions to tally.");
     phase = "submissions";
+    saveSubmissions();
     return;
   }
 
@@ -200,17 +229,21 @@ async function announceWinners() {
   await bot.sendMessage(`@${CHANNEL}`, msg, { parse_mode: "Markdown" });
   console.log("✅ Winners announced.");
 
-  submissions = []; // clear for next round
+  submissions = [];
   phase = "submissions";
   nextRoundTime = new Date(Date.now() + 2 * 60 * 60 * 1000);
+  saveSubmissions();
   console.log("♻️ Submissions cleared for next round.");
 }
 
 // === RUN CYCLE EVERY 2 HOURS ===
-cron.schedule("0 */2 * * *", async () => {
-  console.log("⏰ Starting a new 2-hour cycle...");
-  await postSubmissions();
-  setTimeout(announceWinners, 2 * 60 * 60 * 1000); // wait 2 hours
-});
+if (!process.env.CRON_STARTED) {
+  process.env.CRON_STARTED = true;
+  cron.schedule("0 */2 * * *", async () => {
+    console.log("⏰ Starting a new 2-hour cycle...");
+    await postSubmissions();
+    setTimeout(announceWinners, 2 * 60 * 60 * 1000);
+  });
+}
 
-console.log("✅ SunoLabs Bot (2-hour mode, live votes) is running...");
+console.log("✅ SunoLabs Bot (2-hour persistent mode, live votes) is running...");
