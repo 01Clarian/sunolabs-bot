@@ -13,9 +13,18 @@ bot.on("message", async (msg) => {
 
   const user = msg.from.username || msg.from.first_name;
 
-  // If user sends an audio file (MP3/WAV)
+  // === AUDIO SUBMISSION ===
   if (msg.audio) {
     const fileId = msg.audio.file_id;
+
+    // calculate time left dynamically (2-minute rounds)
+    const now = new Date();
+    const nextRound = new Date(Math.ceil(now.getTime() / (2 * 60 * 1000)) * (2 * 60 * 1000));
+    const diffMs = nextRound - now;
+    const minutesLeft = Math.floor(diffMs / 60000);
+    const secondsLeft = Math.floor((diffMs % 60000) / 1000);
+
+    // Save submission
     submissions.push({
       user,
       type: "audio",
@@ -24,18 +33,27 @@ bot.on("message", async (msg) => {
       votes: 0,
       voters: []
     });
+
     await bot.sendMessage(
       msg.chat.id,
-      "✅ Got your *audio track*! Results post in ~10 minutes for testing.",
+      `✅ Got your *audio track*! Next round posts in *${minutesLeft}m ${secondsLeft}s* — good luck 🍀`,
       { parse_mode: "Markdown" }
     );
     console.log(`🎧 Audio submission from @${user}`);
     return;
   }
 
-  // If user sends a link (http)
+  // === LINK SUBMISSION ===
   const link = msg.text?.trim();
   if (link?.startsWith("http")) {
+    // calculate time left dynamically (2-minute rounds)
+    const now = new Date();
+    const nextRound = new Date(Math.ceil(now.getTime() / (2 * 60 * 1000)) * (2 * 60 * 1000));
+    const diffMs = nextRound - now;
+    const minutesLeft = Math.floor(diffMs / 60000);
+    const secondsLeft = Math.floor((diffMs % 60000) / 1000);
+
+    // Save submission
     submissions.push({
       user,
       type: "link",
@@ -43,16 +61,17 @@ bot.on("message", async (msg) => {
       votes: 0,
       voters: []
     });
+
     await bot.sendMessage(
       msg.chat.id,
-      "✅ Got your *link submission*! Results post in ~10 minutes for testing.",
+      `✅ Got your *link submission*! Next round posts in *${minutesLeft}m ${secondsLeft}s* — good luck 🍀`,
       { parse_mode: "Markdown" }
     );
     console.log(`✅ Link submission from @${user}: ${link}`);
     return;
   }
 
-  // Otherwise, tell them what to send
+  // === UNKNOWN INPUT ===
   await bot.sendMessage(
     msg.chat.id,
     "🎵 Send your Suno track link *or upload an audio file* to enter today's round.",
@@ -76,7 +95,7 @@ bot.on("callback_query", (q) => {
   bot.answerCallbackQuery(q.id, { text: "✅ Vote recorded!" });
 });
 
-// Post all submissions to the channel
+// === POST SUBMISSIONS ===
 async function postSubmissions() {
   if (submissions.length === 0) {
     console.log("🚫 No submissions to post.");
@@ -85,26 +104,20 @@ async function postSubmissions() {
 
   for (const s of submissions) {
     if (s.type === "audio") {
-      // Post uploaded audio file directly
       await bot.sendAudio(`@${CHANNEL}`, s.track, {
-        caption: `🎧 @${s.user} dropped a track${s.title ? ` — *${s.title}*` : ""}\n⏳ Voting open for 10 minutes!\n(Only 🔥 button clicks count as votes.)`,
+        caption: `🎧 @${s.user} dropped a track${s.title ? ` — *${s.title}*` : ""}\n⏳ Voting open for 2 minutes!\n(Only 🔥 button clicks count as votes.)`,
         parse_mode: "Markdown",
         reply_markup: {
-          inline_keyboard: [
-            [{ text: "🔥 Vote", callback_data: `vote_${s.user}` }]
-          ]
+          inline_keyboard: [[{ text: "🔥 Vote", callback_data: `vote_${s.user}` }]]
         }
       });
     } else {
-      // Post text message for link submissions
       await bot.sendMessage(
         `@${CHANNEL}`,
-        `🎧 @${s.user} dropped a track:\n${s.track}\n\n⏳ Voting open for 10 minutes!\n(Only 🔥 button clicks count as votes.)`,
+        `🎧 @${s.user} dropped a track:\n${s.track}\n\n⏳ Voting open for 2 minutes!\n(Only 🔥 button clicks count as votes.)`,
         {
           reply_markup: {
-            inline_keyboard: [
-              [{ text: "🔥 Vote", callback_data: `vote_${s.user}` }]
-            ]
+            inline_keyboard: [[{ text: "🔥 Vote", callback_data: `vote_${s.user}` }]]
           }
         }
       );
@@ -114,7 +127,7 @@ async function postSubmissions() {
   console.log("✅ Posted all submissions.");
 }
 
-// Tally votes and announce winners
+// === ANNOUNCE WINNERS ===
 async function announceWinners() {
   if (submissions.length === 0) {
     console.log("🚫 No submissions to tally.");
@@ -138,12 +151,11 @@ async function announceWinners() {
   console.log("♻️ Submissions cleared for next round.");
 }
 
-// Run a full 10-minute test cycle
-// Posts submissions, waits 10 minutes, then announces winners
-cron.schedule("*/10 * * * *", async () => {
-  console.log("⏰ Starting a new 10-minute cycle...");
+// === RUN TEST CYCLE EVERY 2 MINUTES ===
+cron.schedule("*/2 * * * *", async () => {
+  console.log("⏰ Starting a new 2-minute cycle...");
   await postSubmissions();
-  setTimeout(announceWinners, 10 * 60 * 1000); // wait 10 minutes
+  setTimeout(announceWinners, 2 * 60 * 1000); // wait 2 minutes
 });
 
-console.log("✅ SunoLabs Bot (10-min test mode, supports audio) is running...");
+console.log("✅ SunoLabs Bot (2-min test mode, supports audio) is running...");
