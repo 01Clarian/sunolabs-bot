@@ -7,31 +7,57 @@ const bot = new TelegramBot(token, { polling: true });
 const CHANNEL = "sunolabs"; // without @
 let submissions = [];
 
-// Handle DM submissions
-bot.on("message", (msg) => {
+// Handle DM submissions (accepts links OR uploaded audio)
+bot.on("message", async (msg) => {
   if (msg.chat.type !== "private") return;
 
-  const link = msg.text?.trim();
-  if (!link?.startsWith("http")) {
-    bot.sendMessage(
+  const user = msg.from.username || msg.from.first_name;
+
+  // If user sends an audio file (MP3/WAV)
+  if (msg.audio) {
+    const fileId = msg.audio.file_id;
+    submissions.push({
+      user,
+      type: "audio",
+      track: fileId,
+      title: msg.audio.file_name || "Untitled Track",
+      votes: 0,
+      voters: []
+    });
+    await bot.sendMessage(
       msg.chat.id,
-      "🎵 Send your Suno track link (a URL) to enter today's round."
+      "✅ Got your *audio track*! Results post in ~10 minutes for testing.",
+      { parse_mode: "Markdown" }
     );
+    console.log(`🎧 Audio submission from @${user}`);
     return;
   }
 
-  submissions.push({
-    user: msg.from.username || msg.from.first_name,
-    track: link,
-    votes: 0,
-    voters: []
-  });
+  // If user sends a link (http)
+  const link = msg.text?.trim();
+  if (link?.startsWith("http")) {
+    submissions.push({
+      user,
+      type: "link",
+      track: link,
+      votes: 0,
+      voters: []
+    });
+    await bot.sendMessage(
+      msg.chat.id,
+      "✅ Got your *link submission*! Results post in ~10 minutes for testing.",
+      { parse_mode: "Markdown" }
+    );
+    console.log(`✅ Link submission from @${user}: ${link}`);
+    return;
+  }
 
-  bot.sendMessage(
+  // Otherwise, tell them what to send
+  await bot.sendMessage(
     msg.chat.id,
-    "✅ Got your track for today's round! Results post in ~10 minutes for testing."
+    "🎵 Send your Suno track link *or upload an audio file* to enter today's round.",
+    { parse_mode: "Markdown" }
   );
-  console.log(`✅ New submission from @${msg.from.username}: ${link}`);
 });
 
 // Handle 🔥 votes (only from bot's inline buttons)
@@ -58,17 +84,31 @@ async function postSubmissions() {
   }
 
   for (const s of submissions) {
-    await bot.sendMessage(
-      `@${CHANNEL}`,
-      `🎧 @${s.user} dropped a track:\n${s.track}\n\n⏳ Voting open for 10 minutes!\n(Only 🔥 button clicks count as votes.)`,
-      {
+    if (s.type === "audio") {
+      // Post uploaded audio file directly
+      await bot.sendAudio(`@${CHANNEL}`, s.track, {
+        caption: `🎧 @${s.user} dropped a track${s.title ? ` — *${s.title}*` : ""}\n⏳ Voting open for 10 minutes!\n(Only 🔥 button clicks count as votes.)`,
+        parse_mode: "Markdown",
         reply_markup: {
           inline_keyboard: [
             [{ text: "🔥 Vote", callback_data: `vote_${s.user}` }]
           ]
         }
-      }
-    );
+      });
+    } else {
+      // Post text message for link submissions
+      await bot.sendMessage(
+        `@${CHANNEL}`,
+        `🎧 @${s.user} dropped a track:\n${s.track}\n\n⏳ Voting open for 10 minutes!\n(Only 🔥 button clicks count as votes.)`,
+        {
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: "🔥 Vote", callback_data: `vote_${s.user}` }]
+            ]
+          }
+        }
+      );
+    }
   }
 
   console.log("✅ Posted all submissions.");
@@ -86,7 +126,9 @@ async function announceWinners() {
   let msg = "🏆 *Top Tracks of the Round* 🏆\n\n";
 
   top.forEach((s, i) => {
-    msg += `${i + 1}. @${s.user} — ${s.votes} 🔥\n${s.track}\n\n`;
+    msg += `${i + 1}. @${s.user} — ${s.votes} 🔥\n`;
+    if (s.type === "link") msg += `${s.track}\n\n`;
+    else msg += `🎵 Audio submission\n\n`;
   });
 
   await bot.sendMessage(`@${CHANNEL}`, msg, { parse_mode: "Markdown" });
@@ -103,5 +145,5 @@ cron.schedule("*/10 * * * *", async () => {
   await postSubmissions();
   setTimeout(announceWinners, 10 * 60 * 1000); // wait 10 minutes
 });
-console.log("✅ SunoLabs Bot (10-min test mode) is running...");
 
+console.log("✅ SunoLabs Bot (10-min test mode, supports audio) is running...");
