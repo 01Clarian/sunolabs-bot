@@ -7,7 +7,7 @@ const bot = new TelegramBot(token, { polling: true });
 const CHANNEL = "sunolabs_submissions"; // without @
 let submissions = [];
 
-// Handle DM submissions (accepts links OR uploaded audio)
+// === HANDLE DM SUBMISSIONS ===
 bot.on("message", async (msg) => {
   if (msg.chat.type !== "private") return;
 
@@ -24,7 +24,6 @@ bot.on("message", async (msg) => {
     const minutesLeft = Math.floor(diffMs / 60000);
     const secondsLeft = Math.floor((diffMs % 60000) / 1000);
 
-    // Save submission
     submissions.push({
       user,
       type: "audio",
@@ -46,14 +45,12 @@ bot.on("message", async (msg) => {
   // === LINK SUBMISSION ===
   const link = msg.text?.trim();
   if (link?.startsWith("http")) {
-    // calculate time left dynamically (2-minute rounds)
     const now = new Date();
     const nextRound = new Date(Math.ceil(now.getTime() / (2 * 60 * 1000)) * (2 * 60 * 1000));
     const diffMs = nextRound - now;
     const minutesLeft = Math.floor(diffMs / 60000);
     const secondsLeft = Math.floor((diffMs % 60000) / 1000);
 
-    // Save submission
     submissions.push({
       user,
       type: "link",
@@ -79,23 +76,58 @@ bot.on("message", async (msg) => {
   );
 });
 
-// Handle 🔥 votes (only from bot's inline buttons)
-bot.on("callback_query", (q) => {
+// === HANDLE 🔥 VOTES ===
+bot.on("callback_query", async (q) => {
   const [action, username] = q.data.split("_");
   const voter = q.from.username;
   const entry = submissions.find((s) => s.user === username);
   if (!entry) return;
 
-  if (!entry.voters.includes(voter)) {
-    if (action === "vote") entry.votes++;
-    entry.voters.push(voter);
-    console.log(`🔥 ${voter} voted for @${username}`);
+  // prevent multiple votes from same user
+  if (entry.voters.includes(voter)) {
+    return bot.answerCallbackQuery(q.id, { text: "⚠️ You already voted for this track." });
+  }
+
+  // register new vote
+  entry.votes++;
+  entry.voters.push(voter);
+  console.log(`🔥 ${voter} voted for @${username}`);
+
+  // visually update caption/text
+  try {
+    if (entry.type === "audio") {
+      await bot.editMessageCaption(
+        `🎧 @${entry.user} dropped a track${entry.title ? ` — *${entry.title}*` : ""}\n🔥 Votes: ${entry.votes}`,
+        {
+          chat_id: q.message.chat.id,
+          message_id: q.message.message_id,
+          parse_mode: "Markdown",
+          reply_markup: {
+            inline_keyboard: [[{ text: "🔥 Vote", callback_data: `vote_${entry.user}` }]]
+          }
+        }
+      );
+    } else {
+      await bot.editMessageText(
+        `🎧 @${entry.user} dropped a track:\n${entry.track}\n\n🔥 Votes: ${entry.votes}`,
+        {
+          chat_id: q.message.chat.id,
+          message_id: q.message.message_id,
+          parse_mode: "Markdown",
+          reply_markup: {
+            inline_keyboard: [[{ text: "🔥 Vote", callback_data: `vote_${entry.user}` }]]
+          }
+        }
+      );
+    }
+  } catch (e) {
+    console.error("Edit failed:", e.message);
   }
 
   bot.answerCallbackQuery(q.id, { text: "✅ Vote recorded!" });
 });
 
-// === POST SUBMISSIONS ===
+// === POST SUBMISSIONS TO CHANNEL ===
 async function postSubmissions() {
   if (submissions.length === 0) {
     console.log("🚫 No submissions to post.");
@@ -105,7 +137,7 @@ async function postSubmissions() {
   for (const s of submissions) {
     if (s.type === "audio") {
       await bot.sendAudio(`@${CHANNEL}`, s.track, {
-        caption: `🎧 @${s.user} dropped a track${s.title ? ` — *${s.title}*` : ""}\n⏳ Voting open for 2 minutes!\n(Only 🔥 button clicks count as votes.)`,
+        caption: `🎧 @${s.user} dropped a track${s.title ? ` — *${s.title}*` : ""}\n🔥 Votes: 0`,
         parse_mode: "Markdown",
         reply_markup: {
           inline_keyboard: [[{ text: "🔥 Vote", callback_data: `vote_${s.user}` }]]
@@ -114,8 +146,9 @@ async function postSubmissions() {
     } else {
       await bot.sendMessage(
         `@${CHANNEL}`,
-        `🎧 @${s.user} dropped a track:\n${s.track}\n\n⏳ Voting open for 2 minutes!\n(Only 🔥 button clicks count as votes.)`,
+        `🎧 @${s.user} dropped a track:\n${s.track}\n\n🔥 Votes: 0`,
         {
+          parse_mode: "Markdown",
           reply_markup: {
             inline_keyboard: [[{ text: "🔥 Vote", callback_data: `vote_${s.user}` }]]
           }
@@ -123,7 +156,6 @@ async function postSubmissions() {
       );
     }
   }
-
   console.log("✅ Posted all submissions.");
 }
 
@@ -155,7 +187,8 @@ async function announceWinners() {
 cron.schedule("*/2 * * * *", async () => {
   console.log("⏰ Starting a new 2-minute cycle...");
   await postSubmissions();
-  setTimeout(announceWinners, 2 * 60 * 1000); // wait 2 minutes
+  setTimeout(announceWinners, 2 * 60 * 1000);
 });
 
-console.log("✅ SunoLabs Bot (2-min test mode, supports audio) is running...");
+console.log("✅ SunoLabs Bot (2-min test mode, live votes) is running...");
+
