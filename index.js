@@ -110,11 +110,14 @@ bot.on("message", async (msg) => {
   });
   saveState();
 
-  // Reply to user with link
+// after you create payURL
+const redirectLink = `https://solpay.link/${encodeURIComponent(payURL.toString())}`;
+
+// then message:
 await bot.sendMessage(
   msg.chat.id,
-  `🎧 Got your audio track!\n\nBefore it's accepted, please confirm your entry by sending ≥ 0.01 SOL.\n\n🔗 Solana Pay link:\n${payURL.toString()}\n\nCopy & paste into your browser or tap in Phantom.\n\nFunds go directly to the community pot.`,
-  { parse_mode: undefined, disable_web_page_preview: true }
+  `🎧 Got your audio track!\n\nBefore it's accepted, please confirm your entry by sending ≥ 0.01 SOL.\n\n👉 [Tap here to pay with Solana Pay](${redirectLink})\n\nFunds go directly to the community pot.`,
+  { parse_mode: "Markdown", disable_web_page_preview: true }
 );
 
 
