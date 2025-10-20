@@ -24,26 +24,54 @@ app.post("/confirm-payment", async (req, res) => {
       amount,
     });
 
-    // ✅ Forward confirmation to the Telegram bot service
-    const botUrl = "https://sunolabs-bot.onrender.com/confirm-payment";
+    // === Send Telegram confirmation directly (no internal HTTP call)
+    const token = process.env.BOT_TOKEN;
+    const TELEGRAM_API = `https://api.telegram.org/bot${token}/sendMessage`;
 
-    try {
-      const fwd = await fetch(botUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ signature, reference, userId, amount }),
-      });
+    // ✅ DM the user who paid
+    if (userId) {
+      try {
+        const dm = await fetch(TELEGRAM_API, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            chat_id: userId,
+            text: "✅ Payment confirmed — your track is officially entered!",
+          }),
+        });
 
-      if (fwd.ok) {
-        console.log("📨 Successfully forwarded to Telegram bot ✅");
-      } else {
-        console.error("⚠️ Bot forward failed:", fwd.status, await fwd.text());
+        if (dm.ok) {
+          console.log("📨 Sent Telegram DM to user", userId);
+        } else {
+          console.error("⚠️ Telegram DM failed:", await dm.text());
+        }
+      } catch (err) {
+        console.error("⚠️ Error sending Telegram DM:", err.message);
       }
-    } catch (err) {
-      console.error("⚠️ Error forwarding to bot:", err.message);
     }
 
-    // Respond OK to payment page
+    // ✅ Announce in the public channel
+    const CHANNEL = "@sunolabs_submissions";
+    try {
+      const broadcast = await fetch(TELEGRAM_API, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          chat_id: CHANNEL,
+          text: `💰 New payment confirmed!\nAmount: ${amount} SOL\nSignature: ${signature}\nReference: ${reference}`,
+        }),
+      });
+
+      if (broadcast.ok) {
+        console.log("📣 Announced payment in channel.");
+      } else {
+        console.error("⚠️ Telegram broadcast failed:", await broadcast.text());
+      }
+    } catch (err) {
+      console.error("⚠️ Error broadcasting to channel:", err.message);
+    }
+
+    // ✅ Always respond OK to caller
     res.status(200).json({ ok: true });
   } catch (err) {
     console.error("⚠️ Webhook error:", err.message);
@@ -55,3 +83,4 @@ app.post("/confirm-payment", async (req, res) => {
 app.listen(PORT, () => {
   console.log(`🌐 SunoLabs Webhook running on port ${PORT}`);
 });
+
