@@ -17,6 +17,17 @@ import BigNumber from "bignumber.js";
 const token = process.env.BOT_TOKEN;
 if (!token) throw new Error("BOT_TOKEN not set");
 const bot = new TelegramBot(token, { polling: true });
+
+// === Prevent multiple polling instances on Render restarts ===
+process.once("SIGTERM", () => {
+  console.log("🧹 Graceful shutdown (SIGTERM) — stopping polling");
+  bot.stopPolling();
+});
+process.once("SIGINT", () => {
+  console.log("🧹 Graceful shutdown (SIGINT) — stopping polling");
+  bot.stopPolling();
+});
+
 const CHANNEL = "sunolabs_submissions"; // ensure bot is admin in channel
 
 // === SOLANA CONFIG ===
