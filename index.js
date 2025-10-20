@@ -8,7 +8,9 @@ const bot = new TelegramBot(token, { polling: true });
 const CHANNEL = "sunolabs_submissions"; // without @
 
 // === PERSISTENT SAVE PATH ===
-const SAVE_FILE = fs.existsSync("/data") ? "/data/submissions.json" : "./submissions.json";
+const SAVE_FILE = fs.existsSync("/data")
+  ? "/data/submissions.json"
+  : "./submissions.json";
 
 let submissions = [];
 let phase = "submissions";
@@ -19,7 +21,10 @@ console.log("🚀 SunoLabs Bot started at", new Date().toISOString());
 // === PERSISTENCE ===
 function saveSubmissions() {
   try {
-    fs.writeFileSync(SAVE_FILE, JSON.stringify({ submissions, phase, nextRoundTime }, null, 2));
+    fs.writeFileSync(
+      SAVE_FILE,
+      JSON.stringify({ submissions, phase, nextRoundTime }, null, 2)
+    );
   } catch (err) {
     console.error("⚠️ Failed to save submissions:", err.message);
   }
@@ -32,7 +37,9 @@ function loadSubmissions() {
       submissions = data.submissions || [];
       phase = data.phase || "submissions";
       nextRoundTime = data.nextRoundTime || null;
-      console.log(`💾 Loaded ${submissions.length} saved submissions (phase: ${phase})`);
+      console.log(
+        `💾 Loaded ${submissions.length} saved submissions (phase: ${phase})`
+      );
     } catch (err) {
       console.error("⚠️ Failed to load saved submissions:", err.message);
     }
@@ -44,12 +51,12 @@ loadSubmissions();
 bot.on("message", async (msg) => {
   if (msg.chat.type !== "private" || !msg.audio) return;
 
-  const user =
-    msg.from.username
-      ? `@${msg.from.username.replace(/_/g, "\\_")}`
-      : `${msg.from.first_name || "Unknown"}`;
+  const user = msg.from.username
+    ? `@${msg.from.username.replace(/_/g, "\\_")}`
+    : `${msg.from.first_name || "Unknown"}`;
   const userId = msg.from.id;
 
+  // Block new entries during voting phase
   if (phase === "voting") {
     const diff = nextRoundTime ? nextRoundTime - Date.now() : 0;
     const hours = Math.max(0, Math.floor(diff / 3600000));
@@ -73,9 +80,17 @@ bot.on("message", async (msg) => {
 
   const fileId = msg.audio.file_id;
   const now = new Date();
-  const nextRound = new Date(Math.ceil(now.getTime() / (24 * 60 * 60 * 1000)) * (24 * 60 * 60 * 1000));
+
+  // ✅ FIXED: Next round = next midnight UTC
+  const nextRound = new Date();
+  nextRound.setUTCHours(0, 0, 0, 0);
+  if (nextRound <= now) {
+    nextRound.setUTCDate(nextRound.getUTCDate() + 1);
+  }
+
   const diffMs = nextRound - now;
   const hoursLeft = Math.floor(diffMs / 3600000);
+  const minutesLeft = Math.floor((diffMs % 3600000) / 60000);
 
   submissions.push({
     user,
@@ -87,9 +102,16 @@ bot.on("message", async (msg) => {
   });
   saveSubmissions();
 
+  const timeString =
+    hoursLeft > 0
+      ? `${hoursLeft}h`
+      : minutesLeft > 0
+      ? `${minutesLeft}m`
+      : "less than a minute";
+
   await bot.sendMessage(
     msg.chat.id,
-    `✅ Got your *audio track*! Next round posts in *${hoursLeft}h*.`,
+    `✅ Got your *audio track*! Next round posts in *${timeString}*.`,
     { parse_mode: "Markdown" }
   );
   console.log(`🎧 Audio submission from ${user} (${userId})`);
@@ -104,7 +126,9 @@ bot.on("callback_query", async (q) => {
   if (!entry) return;
 
   if (entry.voters.includes(voter)) {
-    return bot.answerCallbackQuery(q.id, { text: "⚠️ You already voted for this track." });
+    return bot.answerCallbackQuery(q.id, {
+      text: "⚠️ You already voted for this track.",
+    });
   }
 
   entry.votes++;
@@ -118,7 +142,9 @@ bot.on("callback_query", async (q) => {
       message_id: q.message.message_id,
       parse_mode: "Markdown",
       reply_markup: {
-        inline_keyboard: [[{ text: "🔥 Vote", callback_data: `vote_${entry.userId}` }]],
+        inline_keyboard: [
+          [{ text: "🔥 Vote", callback_data: `vote_${entry.userId}` }],
+        ],
       },
     });
   } catch (e) {
@@ -136,7 +162,7 @@ async function postSubmissions() {
   }
 
   phase = "voting";
-  nextRoundTime = new Date(Date.now() + 12 * 60 * 60 * 1000); // 12 h voting window
+  nextRoundTime = new Date(Date.now() + 12 * 60 * 60 * 1000); // 12h voting
   saveSubmissions();
 
   for (const s of submissions) {
@@ -145,7 +171,9 @@ async function postSubmissions() {
         caption: `🎧 ${s.user} — *${s.title}*\n🔥 Votes: 0`,
         parse_mode: "Markdown",
         reply_markup: {
-          inline_keyboard: [[{ text: "🔥 Vote", callback_data: `vote_${s.userId}` }]],
+          inline_keyboard: [
+            [{ text: "🔥 Vote", callback_data: `vote_${s.userId}` }],
+          ],
         },
       });
       await new Promise((res) => setTimeout(res, 1500));
@@ -191,7 +219,7 @@ async function announceWinners() {
 // === RUN DAILY CYCLE ===
 if (!process.env.CRON_STARTED) {
   process.env.CRON_STARTED = true;
-  cron.schedule("0 0 * * *", async () => {   // every midnight UTC
+  cron.schedule("0 0 * * *", async () => {
     console.log("🎬 Starting daily cycle...");
     await postSubmissions();
 
