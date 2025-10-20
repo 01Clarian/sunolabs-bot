@@ -12,7 +12,7 @@ import BigNumber from "bignumber.js";
 const token = process.env.BOT_TOKEN;
 if (!token) throw new Error("BOT_TOKEN not set");
 const bot = new TelegramBot(token, { polling: true });
-const CHANNEL = "sunolabs_submissions";
+const CHANNEL = "sunolabs_submissions"; // make sure the bot is admin in this channel
 
 // === SOLANA CONFIG ===
 const TREASURY = new PublicKey("98tf4zU5WhLmsCt1D4HQH5Ej9C5aFwCz8KQwykmKvDDQ");
@@ -28,7 +28,7 @@ let submissions = [];
 let phase = "submissions";
 let nextRoundTime = null;
 
-// === STATE PERSISTENCE (local JSON) ===
+// === STATE PERSISTENCE ===
 const SAVE_FILE = "./submissions.json";
 
 function saveState() {
@@ -56,7 +56,7 @@ function loadState() {
     potSOL = d.potSOL || 0;
     pendingPayments = d.pendingPayments || [];
   } catch (e) {
-    console.error("⚠️ Failed to load:", e.message);
+    console.error("⚠️ Failed to load state:", e.message);
   }
 }
 loadState();
@@ -67,18 +67,15 @@ app.use(cors());
 app.use(express.json());
 const PORT = process.env.PORT || 10000;
 
-// === ROOT CHECK ===
-app.get("/", (_, res) => {
-  res.send("✅ SunoLabs Bot Web Service is live!");
-});
+// === ROOT HEALTH ===
+app.get("/", (_, res) => res.send("✅ SunoLabs Bot Web Service is live!"));
 
-// === PAYMENT CONFIRMATION ENDPOINT ===
+// === PAYMENT CONFIRMATION ===
 app.post("/confirm-payment", async (req, res) => {
   try {
     const { signature, reference, userId, amount } = req.body;
-    if (!userId || !reference) {
+    if (!userId || !reference)
       return res.status(400).json({ error: "Missing parameters" });
-    }
 
     console.log("✅ Received payment confirmation:", { reference, amount });
 
@@ -100,22 +97,33 @@ app.post("/confirm-payment", async (req, res) => {
     if (sub) sub.paid = true;
     saveState();
 
-    // Telegram notifications
-    await bot.sendMessage(
-      userId,
-      "✅ Payment confirmed — your track is officially entered!"
-    );
-    await bot.sendMessage(
-      `@${CHANNEL}`,
-      `💰 ${userId} added ${amount} SOL to the pot (${potSOL.toFixed(
-        2
-      )} SOL total)`
-    );
+    // === Telegram Notifications ===
+    try {
+      await bot.sendMessage(
+        userId,
+        "✅ Payment confirmed — your track is officially entered!"
+      );
+      console.log("📨 Sent Telegram DM to user", userId);
+    } catch (e) {
+      console.error("⚠️ Failed to DM user:", e.message);
+    }
+
+    try {
+      await bot.sendMessage(
+        `@${CHANNEL}`,
+        `💰 ${userId} added ${amount} SOL to the pot (${potSOL.toFixed(
+          2
+        )} SOL total)`
+      );
+      console.log("📣 Announced payment in channel.");
+    } catch (e) {
+      console.error("⚠️ Failed to post in channel:", e.message);
+    }
 
     res.json({ ok: true });
   } catch (err) {
-    console.error("⚠️ confirm-payment error:", err.message);
-    res.status(500).json({ error: "Internal server error" });
+    console.error("⚠️ confirm-payment error:", err);
+    res.status(500).json({ error: err.message || "Internal server error" });
   }
 });
 
@@ -123,7 +131,7 @@ app.listen(PORT, () =>
   console.log(`🌐 SunoLabs Web Service running on port ${PORT}`)
 );
 
-// === HANDLE AUDIO SUBMISSIONS ===
+// === TELEGRAM BOT HANDLERS ===
 bot.on("message", async (msg) => {
   if (msg.chat.type !== "private" || !msg.audio) return;
 
@@ -185,7 +193,7 @@ bot.on("message", async (msg) => {
   saveState();
 });
 
-// === HANDLE VOTES ===
+// === VOTING ===
 bot.on("callback_query", async (q) => {
   const [action, userIdStr] = q.data.split("_");
   const userId = Number(userIdStr);
@@ -193,9 +201,8 @@ bot.on("callback_query", async (q) => {
   const entry = submissions.find((s) => s.userId === userId);
   if (!entry) return;
 
-  if (entry.voters.includes(voter)) {
+  if (entry.voters.includes(voter))
     return bot.answerCallbackQuery(q.id, { text: "⚠️ You already voted." });
-  }
 
   entry.votes++;
   entry.voters.push(voter);
@@ -276,8 +283,7 @@ async function announceWinners() {
 
   let msg = `🏆 *Top Tracks of the Day* 🏆\n\n💰 Total Pot: ${potSOL.toFixed(
     2
-  )} SOL\n`;
-  msg += `Treasury Share: ${treasuryShare.toFixed(2)} SOL\n\n`;
+  )} SOL\nTreasury Share: ${treasuryShare.toFixed(2)} SOL\n\n`;
   if (sorted[0])
     msg += `🥇 ${sorted[0].user} — ${sorted[0].votes}🔥 — ${first.toFixed(
       2
@@ -301,7 +307,7 @@ async function announceWinners() {
   saveState();
 }
 
-// === DAILY CYCLE (CRON) ===
+// === DAILY CYCLE ===
 if (!process.env.CRON_STARTED) {
   process.env.CRON_STARTED = true;
   cron.schedule("0 0 * * *", async () => {
@@ -317,8 +323,6 @@ if (!process.env.CRON_STARTED) {
 // === HEARTBEAT ===
 setInterval(() => {
   console.log("⏰ Bot heartbeat — still alive", new Date().toISOString());
-  process.stdout.write("");
 }, 15000);
 
-console.log("✅ SunoLabs Bot (single-service mode) running…");
-
+console.log("✅ SunoLabs Bot (web service mode) running…");
