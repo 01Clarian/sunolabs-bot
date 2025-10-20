@@ -1,20 +1,19 @@
-// webhook.js — lightweight public web service for Solana Pay confirmations
+// webhook.js
 import express from "express";
 import cors from "cors";
-import fetch from "node-fetch";
+import fs from "fs";
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
 const PORT = process.env.PORT || 10000;
+const QUEUE_PATH = "/data/payments.json";
 
-// ✅ Health check
-app.get("/", (req, res) => {
-  res.send("✅ SunoLabs Webhook is live!");
-});
+// ✅ Health
+app.get("/", (_, res) => res.send("✅ SunoLabs Webhook is live!"));
 
-// ✅ Main webhook endpoint
+// ✅ Payment confirmation → append to queue
 app.post("/confirm-payment", async (req, res) => {
   try {
     const { signature, reference, userId, amount } = req.body;
@@ -24,34 +23,31 @@ app.post("/confirm-payment", async (req, res) => {
       userId,
       amount,
     });
-    process.stdout.write(""); // flush logs to Render immediately
 
-    // ✅ Forward this confirmation to the background worker (the bot)
-    const botUrl = "https://sunolabs-bot.onrender.com/update-state";
-    const forward = await fetch(botUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ signature, reference, userId, amount }),
-    });
-
-    if (!forward.ok) {
-      const errText = await forward.text();
-      console.error("⚠️ Forward to bot failed:", forward.status, errText);
-      return res.status(500).json({ error: "Failed to notify bot" });
+    // --- Load existing queue or initialize ---
+    let queue = [];
+    if (fs.existsSync(QUEUE_PATH)) {
+      try {
+        queue = JSON.parse(fs.readFileSync(QUEUE_PATH, "utf8"));
+      } catch (e) {
+        console.error("⚠️ Failed to read queue:", e.message);
+      }
     }
 
-    console.log("📨 Successfully forwarded payment to bot service ✅");
-    process.stdout.write(""); // flush again
-    res.status(200).json({ ok: true });
+    // --- Append entry ---
+    queue.push({ signature, reference, userId, amount, time: Date.now() });
+
+    // --- Write back to disk ---
+    fs.writeFileSync(QUEUE_PATH, JSON.stringify(queue, null, 2));
+    console.log("💾 Added payment to queue file:", QUEUE_PATH);
+
+    res.json({ ok: true });
   } catch (err) {
     console.error("⚠️ Webhook error:", err.message);
     res.status(500).json({ error: "Internal server error" });
   }
 });
 
-// ✅ Start server
-app.listen(PORT, () => {
-  console.log(`🌐 SunoLabs Webhook running on port ${PORT}`);
-  process.stdout.write("");
-});
-
+app.listen(PORT, () =>
+  console.log(`🌐 SunoLabs Webhook running on port ${PORT}`)
+);
