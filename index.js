@@ -4,6 +4,7 @@ import cron from "node-cron";
 import fs from "fs";
 import { Connection, clusterApiUrl, Keypair, PublicKey } from "@solana/web3.js";
 import { encodeURL, findReference } from "@solana/pay";
+import BigNumber from "bignumber.js"; // ✅ BigNumber fix
 
 // === TELEGRAM CONFIG ===
 const token = process.env.BOT_TOKEN;
@@ -27,11 +28,20 @@ let nextRoundTime = null;
 
 // === UTILS ===
 function saveState() {
-  fs.writeFileSync(
-    SAVE_FILE,
-    JSON.stringify({ submissions, phase, nextRoundTime, potSOL, pendingPayments }, null, 2)
-  );
+  try {
+    fs.writeFileSync(
+      SAVE_FILE,
+      JSON.stringify(
+        { submissions, phase, nextRoundTime, potSOL, pendingPayments },
+        null,
+        2
+      )
+    );
+  } catch (err) {
+    console.error("⚠️ Failed to save state:", err.message);
+  }
 }
+
 function loadState() {
   if (!fs.existsSync(SAVE_FILE)) return;
   try {
@@ -52,10 +62,13 @@ console.log("🚀 SunoLabs Bot started at", new Date().toISOString());
 // === HANDLE AUDIO SUBMISSIONS ===
 bot.on("message", async (msg) => {
   if (msg.chat.type !== "private" || !msg.audio) return;
-  const user = msg.from.username ? `@${msg.from.username}` : msg.from.first_name;
+
+  const user = msg.from.username
+    ? `@${msg.from.username}`
+    : msg.from.first_name || "Unknown";
   const userId = msg.from.id;
 
-  // voting closed
+  // prevent new entries during voting
   if (phase === "voting") {
     const diff = nextRoundTime ? nextRoundTime - Date.now() : 0;
     const hours = Math.max(0, Math.floor(diff / 3600000));
@@ -67,7 +80,7 @@ bot.on("message", async (msg) => {
     return;
   }
 
-  // already submitted
+  // prevent duplicates
   if (submissions.find((s) => s.userId === userId)) {
     await bot.sendMessage(
       msg.chat.id,
@@ -77,9 +90,10 @@ bot.on("message", async (msg) => {
     return;
   }
 
-  // --- create unique Solana Pay link ---
+  // === Generate Solana Pay Link ===
   const reference = Keypair.generate().publicKey;
-  const amount = 0.01; // minimum 0.01 SOL
+  const amount = new BigNumber(0.01); // ✅ must be BigNumber
+
   const payURL = encodeURL({
     recipient: TREASURY,
     amount,
@@ -87,16 +101,22 @@ bot.on("message", async (msg) => {
     message: `Confirm entry for ${user}`,
     reference: [reference],
   });
-  pendingPayments.push({ userId, username: user, reference: reference.toBase58(), confirmed: false });
+
+  pendingPayments.push({
+    userId,
+    username: user,
+    reference: reference.toBase58(),
+    confirmed: false,
+  });
   saveState();
 
+  // Reply to user with link
   await bot.sendMessage(
     msg.chat.id,
-    `🎧 Got your *audio track*!\n\nBefore it's accepted, please confirm your entry by sending ≥ *0.01 SOL*:\n\n[Confirm with Solana Pay](${payURL.toString()})\n\nFunds go directly to the community pot.`,
+    `🎧 Got your *audio track*! \n\nBefore it's accepted, please confirm your entry by sending ≥ *0.01 SOL*:\n\n[Confirm with Solana Pay](${payURL.toString()})\n\nFunds go directly to the community pot.`,
     { parse_mode: "Markdown", disable_web_page_preview: true }
   );
 
-  // keep audio reference until payment confirmed
   submissions.push({
     user,
     userId,
@@ -113,10 +133,13 @@ bot.on("message", async (msg) => {
 setInterval(async () => {
   for (const p of pendingPayments.filter((x) => !x.confirmed)) {
     try {
-      const sigInfo = await findReference(connection, new PublicKey(p.reference));
-      // If no error, tx found
+      const sigInfo = await findReference(
+        connection,
+        new PublicKey(p.reference)
+      );
+      // if found, mark confirmed
       p.confirmed = true;
-      potSOL += 0.01; // assume min 0.01 for now (simplify)
+      potSOL += 0.01; // assume min 0.01 SOL
       saveState();
 
       const entry = submissions.find((s) => s.userId === p.userId);
@@ -124,12 +147,19 @@ setInterval(async () => {
 
       await bot.sendMessage(
         "@sunolabs",
-        `💰 ${p.username} donated 0.01 SOL — added to the POT! 💎\nCurrent total: ${potSOL.toFixed(2)} SOL`
+        `💰 ${p.username} donated 0.01 SOL — added to the POT! 💎\nCurrent total: ${potSOL.toFixed(
+          2
+        )} SOL`
       );
-      await bot.sendMessage(p.userId, "✅ Payment confirmed — your track is now officially entered!");
-    } catch { /* not found yet */ }
+      await bot.sendMessage(
+        p.userId,
+        "✅ Payment confirmed — your track is now officially entered!"
+      );
+    } catch {
+      // not found yet
+    }
   }
-}, 60000); // every 60 s
+}, 60000); // every 60 seconds
 
 // === HANDLE VOTES ===
 bot.on("callback_query", async (q) => {
@@ -153,7 +183,11 @@ bot.on("callback_query", async (q) => {
       chat_id: q.message.chat.id,
       message_id: q.message.message_id,
       parse_mode: "Markdown",
-      reply_markup: { inline_keyboard: [[{ text: "🔥 Vote", callback_data: `vote_${entry.userId}` }]] },
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: "🔥 Vote", callback_data: `vote_${entry.userId}` }],
+        ],
+      },
     });
   } catch {}
   bot.answerCallbackQuery(q.id, { text: "✅ Vote recorded!" });
@@ -173,7 +207,9 @@ async function postSubmissions() {
 
   await bot.sendMessage(
     `@${CHANNEL}`,
-    `🎬 *Voting Round Started!*\n💰 Total POT: ${potSOL.toFixed(2)} SOL\n50% → Winners • 50% → Treasury`,
+    `🎬 *Voting Round Started!*\n💰 Total POT: ${potSOL.toFixed(
+      2
+    )} SOL\n50% → Winners • 50% → Treasury`,
     { parse_mode: "Markdown" }
   );
 
@@ -182,7 +218,11 @@ async function postSubmissions() {
       await bot.sendAudio(`@${CHANNEL}`, s.track, {
         caption: `🎧 ${s.user} — *${s.title}*\n🔥 Votes: 0`,
         parse_mode: "Markdown",
-        reply_markup: { inline_keyboard: [[{ text: "🔥 Vote", callback_data: `vote_${s.userId}` }]] },
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: "🔥 Vote", callback_data: `vote_${s.userId}` }],
+          ],
+        },
       });
       await new Promise((res) => setTimeout(res, 1500));
     } catch (e) {
@@ -200,22 +240,34 @@ async function announceWinners() {
     saveState();
     return;
   }
+
   const sorted = [...paidSubs].sort((a, b) => b.votes - a.votes);
   const prizePool = potSOL * 0.5;
-  const tShare = potSOL * 0.5;
+  const treasuryShare = potSOL * 0.5;
   const first = prizePool * 0.5;
   const second = prizePool * 0.3;
   const third = prizePool * 0.2;
 
-  let msg = `🏆 *Top Tracks of the Day* 🏆\n\n💰 Total Pot: ${potSOL.toFixed(2)} SOL\n`;
-  msg += `Treasury Share: ${tShare.toFixed(2)} SOL\n\n`;
-  if (sorted[0]) msg += `🥇 ${sorted[0].user} — ${sorted[0].votes}🔥 — ${first.toFixed(2)} SOL\n`;
-  if (sorted[1]) msg += `🥈 ${sorted[1].user} — ${sorted[1].votes}🔥 — ${second.toFixed(2)} SOL\n`;
-  if (sorted[2]) msg += `🥉 ${sorted[2].user} — ${sorted[2].votes}🔥 — ${third.toFixed(2)} SOL\n`;
+  let msg = `🏆 *Top Tracks of the Day* 🏆\n\n💰 Total Pot: ${potSOL.toFixed(
+    2
+  )} SOL\n`;
+  msg += `Treasury Share: ${treasuryShare.toFixed(2)} SOL\n\n`;
+  if (sorted[0])
+    msg += `🥇 ${sorted[0].user} — ${sorted[0].votes}🔥 — ${first.toFixed(
+      2
+    )} SOL\n`;
+  if (sorted[1])
+    msg += `🥈 ${sorted[1].user} — ${sorted[1].votes}🔥 — ${second.toFixed(
+      2
+    )} SOL\n`;
+  if (sorted[2])
+    msg += `🥉 ${sorted[2].user} — ${sorted[2].votes}🔥 — ${third.toFixed(
+      2
+    )} SOL\n`;
 
   await bot.sendMessage(`@${CHANNEL}`, msg, { parse_mode: "Markdown" });
 
-  // reset
+  // reset state
   submissions = [];
   potSOL = 0;
   pendingPayments = [];
