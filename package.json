@@ -8,6 +8,8 @@
   },
   "dependencies": {
     "node-telegram-bot-api": "^0.66.0",
-    "node-cron": "^3.0.3"
+    "node-cron": "^3.0.3",
+    "@solana/web3.js": "^1.95.0",
+    "@solana/pay": "^0.2.0"
   }
 }
