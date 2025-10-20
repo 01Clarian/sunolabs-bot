@@ -5,7 +5,7 @@ import fs from "fs";
 import express from "express";
 import cors from "cors";
 import { Connection, Keypair, PublicKey } from "@solana/web3.js";
-import { encodeURL, findReference } from "@solana/pay";
+import { encodeURL } from "@solana/pay";
 import BigNumber from "bignumber.js";
 
 // === TELEGRAM CONFIG ===
@@ -62,23 +62,82 @@ function loadState() {
 }
 loadState();
 
+// === PAYMENT QUEUE PROCESSOR (shared disk with webhook) ===
+const QUEUE_PATH = "/data/payments.json";
+
+async function processPaymentQueue() {
+  if (!fs.existsSync(QUEUE_PATH)) return;
+
+  let queue;
+  try {
+    queue = JSON.parse(fs.readFileSync(QUEUE_PATH, "utf8"));
+  } catch (e) {
+    console.error("⚠️ Failed to read queue:", e.message);
+    return;
+  }
+
+  if (!Array.isArray(queue) || queue.length === 0) return;
+
+  console.log(`📥 Processing ${queue.length} queued payments…`);
+  const remaining = [];
+
+  for (const p of queue) {
+    try {
+      const { reference, userId, amount } = p;
+      if (!reference || !userId) continue;
+
+      // Skip duplicates
+      if (pendingPayments.find((x) => x.reference === reference)) continue;
+
+      pendingPayments.push({
+        userId,
+        username: userId,
+        reference,
+        confirmed: true,
+      });
+
+      potSOL += parseFloat(amount) || 0.01;
+      const sub = submissions.find((s) => s.userId === userId);
+      if (sub) sub.paid = true;
+
+      saveState();
+
+      // Telegram confirmations
+      await bot.sendMessage(
+        userId,
+        "✅ Payment confirmed — your track is officially entered!"
+      );
+      await bot.sendMessage(
+        `@${CHANNEL}`,
+        `💰 ${userId} added ${amount} SOL to the pot (${potSOL.toFixed(
+          2
+        )} SOL total)`
+      );
+    } catch (err) {
+      console.error("⚠️ Payment process error:", err.message);
+      remaining.push(p); // retry later
+    }
+  }
+
+  fs.writeFileSync(QUEUE_PATH, JSON.stringify(remaining, null, 2));
+  console.log("✅ Payment queue processed and file updated");
+}
+
 console.log("🚀 SunoLabs Bot started at", new Date().toISOString());
 
-// === EXPRESS SERVER (for instant confirmation) ===
+// === EXPRESS SERVER (for optional internal routes) ===
 const app = express();
-app.use(cors()); // ✅ Allow frontend payment page to notify this server
+app.use(cors());
 app.use(express.json());
 const PORT = process.env.PORT || 8080;
 
-// ✅ Internal route for webhook forwarding
+// Keep internal endpoints in case you ever test direct forwarding
 app.post("/update-state", async (req, res) => {
   try {
     const { signature, reference, userId, amount } = req.body;
-
     console.log("💾 Update received from webhook:", { reference, amount });
 
-    // If payment not yet recorded
-    if (!pendingPayments.find(p => p.reference === reference)) {
+    if (!pendingPayments.find((p) => p.reference === reference)) {
       pendingPayments.push({
         userId,
         username: userId,
@@ -92,54 +151,21 @@ app.post("/update-state", async (req, res) => {
 
       saveState();
 
-      // Telegram messages
       await bot.sendMessage(
         userId,
         "✅ Payment confirmed — your track is officially entered!"
       );
       await bot.sendMessage(
         `@${CHANNEL}`,
-        `💰 ${userId} added ${amount} SOL to the pot (${potSOL.toFixed(2)} SOL total)`
-      );
-    }
-
-    res.json({ ok: true });
-  } catch (err) {
-    console.error("⚠️ update-state error:", err.message);
-    res.status(500).json({ error: "Internal error" });
-  }
-});
-
-
-// ✅ Webhook from payment app
-app.post("/confirm-payment", async (req, res) => {
-  try {
-    const { signature, reference, userId, amount } = req.body;
-    console.log("✅ Received payment confirmation:", signature, reference);
-
-    const entry = pendingPayments.find((p) => p.reference === reference);
-    if (entry && !entry.confirmed) {
-      entry.confirmed = true;
-      potSOL += parseFloat(amount) || 0.01;
-      const submission = submissions.find((s) => s.userId === entry.userId);
-      if (submission) submission.paid = true;
-      saveState();
-
-      await bot.sendMessage(
-        entry.userId,
-        "✅ Payment confirmed instantly — your track is officially entered!"
-      );
-      await bot.sendMessage(
-        `@${CHANNEL}`,
-        `💰 ${entry.username} added ${amount || 0.01} SOL to the pot (${potSOL.toFixed(
+        `💰 ${userId} added ${amount} SOL to the pot (${potSOL.toFixed(
           2
         )} SOL total)`
       );
     }
-    res.sendStatus(200);
-  } catch (e) {
-    console.error("⚠️ Confirm-payment error:", e.message);
-    res.sendStatus(500);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("⚠️ update-state error:", err.message);
+    res.status(500).json({ error: "Internal error" });
   }
 });
 
@@ -270,7 +296,7 @@ async function postSubmissions() {
           inline_keyboard: [
             [{ text: "🔥 Vote", callback_data: `vote_${s.userId}` }],
           ],
-        },
+        ],
       });
       await new Promise((res) => setTimeout(res, 1500));
     } catch (e) {
@@ -336,12 +362,14 @@ if (!process.env.CRON_STARTED) {
   });
 }
 
-// === HEARTBEAT ===
+// === HEARTBEAT & QUEUE WATCHER ===
 setInterval(() => {
   console.log("⏰ Bot heartbeat — still alive", new Date().toISOString());
+  processPaymentQueue().catch(() => {});
   process.stdout.write("");
 }, 15000);
 
 console.log(
-  "✅ SunoLabs Bot (with Solana Pay direct confirmation + CORS) running…"
+  "✅ SunoLabs Bot (with Solana Pay direct confirmation + Persistent Queue) running…"
 );
+
