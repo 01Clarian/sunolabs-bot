@@ -10,6 +10,7 @@ import BigNumber from "bignumber.js";
 
 // === TELEGRAM CONFIG ===
 const token = process.env.BOT_TOKEN;
+if (!token) throw new Error("BOT_TOKEN not set");
 const bot = new TelegramBot(token, { polling: true });
 const CHANNEL = "sunolabs_submissions";
 
@@ -27,10 +28,8 @@ let submissions = [];
 let phase = "submissions";
 let nextRoundTime = null;
 
-// === FILE SAVE ===
-const SAVE_FILE = fs.existsSync("/data")
-  ? "/data/submissions.json"
-  : "./submissions.json";
+// === STATE PERSISTENCE (local JSON) ===
+const SAVE_FILE = "./submissions.json";
 
 function saveState() {
   try {
@@ -62,116 +61,66 @@ function loadState() {
 }
 loadState();
 
-// === PAYMENT QUEUE PROCESSOR (shared disk with webhook) ===
-const QUEUE_PATH = fs.existsSync("/data")
-  ? "/data/payments.json"
-  : "./data/payments.json";
-
-async function processPaymentQueue() {
-  if (!fs.existsSync(QUEUE_PATH)) return;
-
-  let queue;
-  try {
-    queue = JSON.parse(fs.readFileSync(QUEUE_PATH, "utf8"));
-  } catch (e) {
-    console.error("⚠️ Failed to read queue:", e.message);
-    return;
-  }
-
-  if (!Array.isArray(queue) || queue.length === 0) return;
-
-  console.log(`📥 Processing ${queue.length} queued payments…`);
-  const remaining = [];
-
-  for (const p of queue) {
-    try {
-      const { reference, userId, amount } = p;
-      if (!reference || !userId) continue;
-
-      // Skip duplicates
-      if (pendingPayments.find((x) => x.reference === reference)) continue;
-
-      pendingPayments.push({
-        userId,
-        username: userId,
-        reference,
-        confirmed: true
-      });
-
-      potSOL += parseFloat(amount) || 0.01;
-      const sub = submissions.find((s) => s.userId === userId);
-      if (sub) sub.paid = true;
-
-      saveState();
-
-      // Telegram confirmations
-      await bot.sendMessage(
-        userId,
-        "✅ Payment confirmed — your track is officially entered!"
-      );
-      await bot.sendMessage(
-        `@${CHANNEL}`,
-        `💰 ${userId} added ${amount} SOL to the pot (${potSOL.toFixed(
-          2
-        )} SOL total)`
-      );
-    } catch (err) {
-      console.error("⚠️ Payment process error:", err.message);
-      remaining.push(p); // retry later
-    }
-  }
-
-  fs.writeFileSync(QUEUE_PATH, JSON.stringify(remaining, null, 2));
-  console.log("✅ Payment queue processed and file updated");
-}
-
-console.log("🚀 SunoLabs Bot started at", new Date().toISOString());
-
-// === EXPRESS SERVER (for optional internal routes) ===
+// === EXPRESS SERVER ===
 const app = express();
 app.use(cors());
 app.use(express.json());
-const PORT = process.env.PORT || 8080;
+const PORT = process.env.PORT || 10000;
 
-app.post("/update-state", async (req, res) => {
+// === ROOT CHECK ===
+app.get("/", (_, res) => {
+  res.send("✅ SunoLabs Bot Web Service is live!");
+});
+
+// === PAYMENT CONFIRMATION ENDPOINT ===
+app.post("/confirm-payment", async (req, res) => {
   try {
-    const { reference, userId, amount } = req.body;
-    console.log("💾 Update received from webhook:", { reference, amount });
-
-    if (!pendingPayments.find((p) => p.reference === reference)) {
-      pendingPayments.push({
-        userId,
-        username: userId,
-        reference,
-        confirmed: true
-      });
-      potSOL += parseFloat(amount) || 0.01;
-
-      const sub = submissions.find((s) => s.userId === userId);
-      if (sub) sub.paid = true;
-
-      saveState();
-
-      await bot.sendMessage(
-        userId,
-        "✅ Payment confirmed — your track is officially entered!"
-      );
-      await bot.sendMessage(
-        `@${CHANNEL}`,
-        `💰 ${userId} added ${amount} SOL to the pot (${potSOL.toFixed(
-          2
-        )} SOL total)`
-      );
+    const { signature, reference, userId, amount } = req.body;
+    if (!userId || !reference) {
+      return res.status(400).json({ error: "Missing parameters" });
     }
+
+    console.log("✅ Received payment confirmation:", { reference, amount });
+
+    // Avoid duplicates
+    if (pendingPayments.find((p) => p.reference === reference)) {
+      return res.json({ ok: true, message: "Already processed" });
+    }
+
+    // Record payment
+    pendingPayments.push({
+      userId,
+      username: userId,
+      reference,
+      confirmed: true,
+    });
+    potSOL += parseFloat(amount) || 0.01;
+
+    const sub = submissions.find((s) => s.userId === userId);
+    if (sub) sub.paid = true;
+    saveState();
+
+    // Telegram notifications
+    await bot.sendMessage(
+      userId,
+      "✅ Payment confirmed — your track is officially entered!"
+    );
+    await bot.sendMessage(
+      `@${CHANNEL}`,
+      `💰 ${userId} added ${amount} SOL to the pot (${potSOL.toFixed(
+        2
+      )} SOL total)`
+    );
+
     res.json({ ok: true });
   } catch (err) {
-    console.error("⚠️ update-state error:", err.message);
-    res.status(500).json({ error: "Internal error" });
+    console.error("⚠️ confirm-payment error:", err.message);
+    res.status(500).json({ error: "Internal server error" });
   }
 });
 
 app.listen(PORT, () =>
-  console.log(`🌐 Express listener for confirmations running on ${PORT}`)
+  console.log(`🌐 SunoLabs Web Service running on port ${PORT}`)
 );
 
 // === HANDLE AUDIO SUBMISSIONS ===
@@ -214,7 +163,7 @@ bot.on("message", async (msg) => {
     userId,
     username: user,
     reference: reference.toBase58(),
-    confirmed: false
+    confirmed: false,
   });
   saveState();
 
@@ -231,7 +180,7 @@ bot.on("message", async (msg) => {
     title: msg.audio.file_name || "Untitled Track",
     votes: 0,
     voters: [],
-    paid: false
+    paid: false,
   });
   saveState();
 });
@@ -260,9 +209,9 @@ bot.on("callback_query", async (q) => {
       parse_mode: "Markdown",
       reply_markup: {
         inline_keyboard: [
-          [{ text: "🔥 Vote", callback_data: `vote_${entry.userId}` }]
-        ]
-      }
+          [{ text: "🔥 Vote", callback_data: `vote_${entry.userId}` }],
+        ],
+      },
     });
   } catch (err) {
     console.error("⚠️ Failed to edit message caption:", err.message);
@@ -297,9 +246,9 @@ async function postSubmissions() {
         parse_mode: "Markdown",
         reply_markup: {
           inline_keyboard: [
-            [{ text: "🔥 Vote", callback_data: `vote_${s.userId}` }]
-          ]
-        }
+            [{ text: "🔥 Vote", callback_data: `vote_${s.userId}` }],
+          ],
+        },
       });
       await new Promise((res) => setTimeout(res, 1500));
     } catch (e) {
@@ -352,7 +301,7 @@ async function announceWinners() {
   saveState();
 }
 
-// === DAILY CYCLE ===
+// === DAILY CYCLE (CRON) ===
 if (!process.env.CRON_STARTED) {
   process.env.CRON_STARTED = true;
   cron.schedule("0 0 * * *", async () => {
@@ -365,15 +314,11 @@ if (!process.env.CRON_STARTED) {
   });
 }
 
-// === HEARTBEAT & QUEUE WATCHER ===
+// === HEARTBEAT ===
 setInterval(() => {
   console.log("⏰ Bot heartbeat — still alive", new Date().toISOString());
-  processPaymentQueue().catch(() => {});
   process.stdout.write("");
 }, 15000);
 
-console.log(
-  "✅ SunoLabs Bot (with Solana Pay direct confirmation + Persistent Queue) running…"
-);
-
+console.log("✅ SunoLabs Bot (single-service mode) running…");
 
