@@ -9,6 +9,7 @@
     "dependencies": {
     "express": "^4.19.2",
     "node-telegram-bot-api": "^0.66.0",
+    "webhook": "node webhook.js",
     "node-cron": "^3.0.3",
      "cors": "^2.8.5",
     "@solana/web3.js": "^1.95.0",
