@@ -111,11 +111,11 @@ bot.on("message", async (msg) => {
   saveState();
 
   // Reply to user with link
-  await bot.sendMessage(
-    msg.chat.id,
-    `🎧 Got your *audio track*! \n\nBefore it's accepted, please confirm your entry by sending ≥ *0.01 SOL*:\n\n[Confirm with Solana Pay](${payURL.toString()})\n\nFunds go directly to the community pot.`,
-    { parse_mode: "Markdown", disable_web_page_preview: true }
-  );
+await bot.sendMessage(
+  msg.chat.id,
+  `🎧 Got your *audio track*! \n\nPlease confirm your entry by sending ≥ *0.01 SOL* using this Solana Pay link:\n\n\`${payURL.toString()}\`\n\nCopy & paste into your browser or Phantom wallet.\nFunds go directly to the community pot.`,
+  { parse_mode: "MarkdownV2", disable_web_page_preview: true }
+);
 
   submissions.push({
     user,
