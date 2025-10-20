@@ -3,24 +3,23 @@ import TelegramBot from "node-telegram-bot-api";
 import cron from "node-cron";
 import fs from "fs";
 import { Connection, Keypair, PublicKey } from "@solana/web3.js";
-import { findReference } from "@solana/pay";
+import { encodeURL, findReference } from "@solana/pay";
 import BigNumber from "bignumber.js";
 
 // === TELEGRAM CONFIG ===
 const token = process.env.BOT_TOKEN;
 const bot = new TelegramBot(token, { polling: true });
-const CHANNEL = "sunolabs_submissions"; // without @
+const CHANNEL = "sunolabs_submissions";
 
 // === SOLANA CONFIG ===
 const TREASURY = new PublicKey("98tf4zU5WhLmsCt1D4HQH5Ej9C5aFwCz8KQwykmKvDDQ");
 
-// ✅ Use Helius RPC (fast indexing)
+// ✅ Use Helius RPC for faster indexing
 const RPC_URL =
   process.env.SOLANA_RPC_URL ||
   "https://mainnet.helius-rpc.com/?api-key=f6691497-4961-41e1-9a08-53f30c65bf43";
 
 const connection = new Connection(RPC_URL, "confirmed");
-
 let potSOL = 0;
 let pendingPayments = []; // { userId, username, reference, confirmed }
 
@@ -75,6 +74,7 @@ bot.on("message", async (msg) => {
     : msg.from.first_name || "Unknown";
   const userId = msg.from.id;
 
+  // prevent new entries during voting
   if (phase === "voting") {
     const diff = nextRoundTime ? nextRoundTime - Date.now() : 0;
     const hours = Math.max(0, Math.floor(diff / 3600000));
@@ -86,6 +86,7 @@ bot.on("message", async (msg) => {
     return;
   }
 
+  // prevent duplicates
   if (submissions.find((s) => s.userId === userId)) {
     await bot.sendMessage(
       msg.chat.id,
@@ -95,9 +96,10 @@ bot.on("message", async (msg) => {
     return;
   }
 
-  // === Generate Solana Pay Redirect ===
+  // === Generate Solana Pay Link ===
   const reference = Keypair.generate().publicKey;
   const amount = new BigNumber(0.01);
+
   const redirectLink = `https://sunolabs-redirect.onrender.com/pay?recipient=${TREASURY.toBase58()}&amount=0.01&reference=${reference.toBase58()}&label=SunoLabs%20Entry&message=Confirm%20entry%20for%20${encodeURIComponent(
     user
   )}`;
@@ -128,44 +130,54 @@ bot.on("message", async (msg) => {
   saveState();
 });
 
-// === PAYMENT WATCHER ===
+// === PAYMENT WATCHER (parallel-safe) ===
 setInterval(async () => {
   console.log("🔍 Scanning for new payments...");
 
-  for (const p of pendingPayments.filter((x) => !x.confirmed)) {
-    try {
-      const sigInfo = await findReference(
-        connection,
-        new PublicKey(p.reference),
-        { finality: "confirmed" }
-      );
-
-      if (sigInfo?.signature) {
-        console.log("✅ Payment found for:", p.username, sigInfo.signature);
-        p.confirmed = true;
-        potSOL += 0.01;
-        saveState();
-
-        const entry = submissions.find((s) => s.userId === p.userId);
-        if (entry) entry.paid = true;
-
-        await bot.sendMessage(
-          "@sunolabs_submissions",
-          `💰 ${p.username} contributed 0.01 SOL — added to the POT (${potSOL.toFixed(
-            2
-          )} SOL)`
-        );
-
-        await bot.sendMessage(
-          p.userId,
-          "✅ Payment confirmed — your track is now officially entered!"
-        );
-      }
-    } catch {
-      console.log(`⏳ Still waiting for ${p.username}...`);
-    }
+  const unconfirmed = pendingPayments.filter((x) => !x.confirmed);
+  if (unconfirmed.length === 0) {
+    console.log("⏸️ No pending payments.");
+    return;
   }
-}, 20000); // every 20s
+
+  // Run all lookups concurrently to avoid waiting serially
+  await Promise.all(
+    unconfirmed.map(async (p) => {
+      try {
+        const sigInfo = await findReference(
+          connection,
+          new PublicKey(p.reference),
+          { finality: "confirmed" }
+        );
+
+        if (sigInfo?.signature) {
+          console.log("✅ Payment found for:", p.username, sigInfo.signature);
+          p.confirmed = true;
+          potSOL += 0.01;
+          saveState();
+
+          const entry = submissions.find((s) => s.userId === p.userId);
+          if (entry) entry.paid = true;
+
+          await bot.sendMessage(
+            `@${CHANNEL}`,
+            `💰 ${p.username} contributed 0.01 SOL — added to the POT (${potSOL.toFixed(
+              2
+            )} SOL)`
+          );
+          await bot.sendMessage(
+            p.userId,
+            "✅ Payment confirmed — your track is now officially entered!"
+          );
+        }
+      } catch {
+        console.log(`⏳ Still waiting for ${p.username}...`);
+      }
+    })
+  );
+
+  process.stdout.write(""); // flush logs immediately to Render
+}, 20000); // every 20 seconds
 
 // === HANDLE VOTES ===
 bot.on("callback_query", async (q) => {
@@ -293,6 +305,12 @@ if (!process.env.CRON_STARTED) {
     }, 12 * 60 * 60 * 1000);
   });
 }
+
+// === HEARTBEAT TO KEEP RENDER ALIVE ===
+setInterval(() => {
+  console.log("⏰ Bot heartbeat — still alive", new Date().toISOString());
+  process.stdout.write("");
+}, 15000);
 
 console.log("✅ SunoLabs Bot (with Solana Pay tracking) running...");
 
