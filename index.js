@@ -2,18 +2,24 @@
 import TelegramBot from "node-telegram-bot-api";
 import cron from "node-cron";
 import fs from "fs";
-import { Connection, clusterApiUrl, Keypair, PublicKey } from "@solana/web3.js";
+import { Connection, Keypair, PublicKey } from "@solana/web3.js";
 import { encodeURL, findReference } from "@solana/pay";
-import BigNumber from "bignumber.js"; // ✅ BigNumber fix
+import BigNumber from "bignumber.js";
 
 // === TELEGRAM CONFIG ===
 const token = process.env.BOT_TOKEN;
 const bot = new TelegramBot(token, { polling: true });
-const CHANNEL = "sunolabs_submissions"; // without @
+const CHANNEL = "sunolabs_submissions";
 
 // === SOLANA CONFIG ===
 const TREASURY = new PublicKey("98tf4zU5WhLmsCt1D4HQH5Ej9C5aFwCz8KQwykmKvDDQ");
-const connection = new Connection(clusterApiUrl("mainnet-beta"));
+
+// ✅ Use Helius RPC for faster indexing
+const RPC_URL =
+  process.env.SOLANA_RPC_URL ||
+  "https://mainnet.helius-rpc.com/?api-key=f6691497-4961-41e1-9a08-53f30c65bf43";
+
+const connection = new Connection(RPC_URL, "confirmed");
 let potSOL = 0;
 let pendingPayments = []; // { userId, username, reference, confirmed }
 
@@ -92,15 +98,11 @@ bot.on("message", async (msg) => {
 
   // === Generate Solana Pay Link ===
   const reference = Keypair.generate().publicKey;
-  const amount = new BigNumber(0.01); // ✅ must be BigNumber
+  const amount = new BigNumber(0.01);
 
-  const payURL = encodeURL({
-    recipient: TREASURY,
-    amount,
-    label: "SunoLabs Entry",
-    message: `Confirm entry for ${user}`,
-    reference: [reference],
-  });
+  const redirectLink = `https://sunolabs-redirect.onrender.com/pay?recipient=${TREASURY.toBase58()}&amount=0.01&reference=${reference.toBase58()}&label=SunoLabs%20Entry&message=Confirm%20entry%20for%20${encodeURIComponent(
+    user
+  )}`;
 
   pendingPayments.push({
     userId,
@@ -110,14 +112,11 @@ bot.on("message", async (msg) => {
   });
   saveState();
 
-// === create Phantom-compatible redirect link ===
-const redirectLink = `https://sunolabs-redirect.onrender.com/pay?recipient=${TREASURY.toBase58()}&amount=0.01&reference=${reference.toBase58()}&label=SunoLabs%20Entry&message=Confirm%20entry%20for%20${encodeURIComponent(user)}`;
-
-await bot.sendMessage(
-  msg.chat.id,
-  `🎧 Got your audio track!\n\nBefore it's accepted, please confirm your entry by sending ≥ *0.01 SOL*.\n\n👉 [Tap here to pay with Solana Pay](${redirectLink})\n\nFunds go directly to the community pot.`,
-  { parse_mode: "Markdown", disable_web_page_preview: true }
-);
+  await bot.sendMessage(
+    msg.chat.id,
+    `🎧 Got your audio track!\n\nBefore it's accepted, please confirm your entry by sending ≥ *0.01 SOL*.\n\n👉 [Tap here to pay with Solana Pay](${redirectLink})\n\nFunds go directly to the community pot.`,
+    { parse_mode: "Markdown", disable_web_page_preview: true }
+  );
 
   submissions.push({
     user,
@@ -133,35 +132,41 @@ await bot.sendMessage(
 
 // === PAYMENT WATCHER ===
 setInterval(async () => {
+  console.log("🔍 Scanning for new payments...");
+
   for (const p of pendingPayments.filter((x) => !x.confirmed)) {
     try {
       const sigInfo = await findReference(
         connection,
-        new PublicKey(p.reference)
+        new PublicKey(p.reference),
+        { finality: "confirmed" }
       );
-      // if found, mark confirmed
-      p.confirmed = true;
-      potSOL += 0.01; // assume min 0.01 SOL
-      saveState();
 
-      const entry = submissions.find((s) => s.userId === p.userId);
-      if (entry) entry.paid = true;
+      if (sigInfo?.signature) {
+        console.log("✅ Payment found for:", p.username, sigInfo.signature);
+        p.confirmed = true;
+        potSOL += 0.01;
+        saveState();
 
-      await bot.sendMessage(
-        "@sunolabs",
-        `💰 ${p.username} donated 0.01 SOL — added to the POT! 💎\nCurrent total: ${potSOL.toFixed(
-          2
-        )} SOL`
-      );
-      await bot.sendMessage(
-        p.userId,
-        "✅ Payment confirmed — your track is now officially entered!"
-      );
-    } catch {
-      // not found yet
+        const entry = submissions.find((s) => s.userId === p.userId);
+        if (entry) entry.paid = true;
+
+        await bot.sendMessage(
+          "@sunolabs_submissions",
+          `💰 ${p.username} contributed 0.01 SOL — added to the POT (${potSOL.toFixed(
+            2
+          )} SOL)`
+        );
+        await bot.sendMessage(
+          p.userId,
+          "✅ Payment confirmed — your track is now officially entered!"
+        );
+      }
+    } catch (e) {
+      console.log(`⏳ Still waiting for ${p.username}...`);
     }
   }
-}, 60000); // every 60 seconds
+}, 60000);
 
 // === HANDLE VOTES ===
 bot.on("callback_query", async (q) => {
@@ -269,7 +274,6 @@ async function announceWinners() {
 
   await bot.sendMessage(`@${CHANNEL}`, msg, { parse_mode: "Markdown" });
 
-  // reset state
   submissions = [];
   potSOL = 0;
   pendingPayments = [];
@@ -291,6 +295,5 @@ if (!process.env.CRON_STARTED) {
   });
 }
 
-console.log("✅ SunoLabs Bot (with Solana Pay donations) running...");
-
+console.log("✅ SunoLabs Bot (with Solana Pay tracking) running...");
 
