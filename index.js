@@ -70,6 +70,47 @@ app.use(cors()); // ✅ Allow frontend payment page to notify this server
 app.use(express.json());
 const PORT = process.env.PORT || 8080;
 
+// ✅ Internal route for webhook forwarding
+app.post("/update-state", async (req, res) => {
+  try {
+    const { signature, reference, userId, amount } = req.body;
+
+    console.log("💾 Update received from webhook:", { reference, amount });
+
+    // If payment not yet recorded
+    if (!pendingPayments.find(p => p.reference === reference)) {
+      pendingPayments.push({
+        userId,
+        username: userId,
+        reference,
+        confirmed: true,
+      });
+      potSOL += parseFloat(amount) || 0.01;
+
+      const sub = submissions.find((s) => s.userId === userId);
+      if (sub) sub.paid = true;
+
+      saveState();
+
+      // Telegram messages
+      await bot.sendMessage(
+        userId,
+        "✅ Payment confirmed — your track is officially entered!"
+      );
+      await bot.sendMessage(
+        `@${CHANNEL}`,
+        `💰 ${userId} added ${amount} SOL to the pot (${potSOL.toFixed(2)} SOL total)`
+      );
+    }
+
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("⚠️ update-state error:", err.message);
+    res.status(500).json({ error: "Internal error" });
+  }
+});
+
+
 // ✅ Webhook from payment app
 app.post("/confirm-payment", async (req, res) => {
   try {
