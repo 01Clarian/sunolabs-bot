@@ -110,13 +110,15 @@ bot.on("message", async (msg) => {
   });
   saveState();
 
-// after you create payURL
-const redirectLink = `https://solpay.link/${encodeURIComponent(payURL.toString())}`;
+// === create Phantom-compatible redirect link ===
+const redirectLink = `https://phantom.app/ul/v1/pay?recipient=${TREASURY.toBase58()}&amount=0.01&reference=${reference.toBase58()}&label=SunoLabs%20Entry&message=Confirm%20entry%20for%20${encodeURIComponent(
+  user
+)}`;
 
-// then message:
+// === send Telegram message ===
 await bot.sendMessage(
   msg.chat.id,
-  `🎧 Got your audio track!\n\nBefore it's accepted, please confirm your entry by sending ≥ 0.01 SOL.\n\n👉 [Tap here to pay with Solana Pay](${redirectLink})\n\nFunds go directly to the community pot.`,
+  `🎧 Got your audio track!\n\nBefore it's accepted, please confirm your entry by sending ≥ *0.01 SOL*.\n\n👉 [Tap here to pay with Phantom (Solana Pay)](${redirectLink})\n\nFunds go directly to the community pot.`,
   { parse_mode: "Markdown", disable_web_page_preview: true }
 );
 
