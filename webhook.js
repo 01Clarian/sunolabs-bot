@@ -24,8 +24,26 @@ app.post("/confirm-payment", async (req, res) => {
       amount,
     });
 
-    // 🔧 Optional: later, you can forward this info to your Telegram bot here.
-    // For now, just log it so you see it in Render logs.
+    // ✅ Forward confirmation to the Telegram bot service
+    const botUrl = "https://sunolabs-bot.onrender.com/confirm-payment";
+
+    try {
+      const fwd = await fetch(botUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ signature, reference, userId, amount }),
+      });
+
+      if (fwd.ok) {
+        console.log("📨 Successfully forwarded to Telegram bot ✅");
+      } else {
+        console.error("⚠️ Bot forward failed:", fwd.status, await fwd.text());
+      }
+    } catch (err) {
+      console.error("⚠️ Error forwarding to bot:", err.message);
+    }
+
+    // Respond OK to payment page
     res.status(200).json({ ok: true });
   } catch (err) {
     console.error("⚠️ Webhook error:", err.message);
