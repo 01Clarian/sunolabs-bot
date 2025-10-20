@@ -74,17 +74,19 @@ app.get("/", (_, res) => res.send("✅ SunoLabs Bot Web Service is live!"));
 app.post("/confirm-payment", async (req, res) => {
   try {
     const { signature, reference, userId, amount } = req.body;
-    if (!userId || !reference)
+    if (!userId || !reference) {
+      console.warn("⚠️ Missing params:", req.body);
       return res.status(400).json({ error: "Missing parameters" });
+    }
 
-    console.log("✅ Received payment confirmation:", { reference, amount });
+    console.log("✅ Received payment confirmation:", { reference, amount, userId });
 
     // Avoid duplicates
     if (pendingPayments.find((p) => p.reference === reference)) {
+      console.log("⚠️ Duplicate reference:", reference);
       return res.json({ ok: true, message: "Already processed" });
     }
 
-    // Record payment
     pendingPayments.push({
       userId,
       username: userId,
@@ -97,32 +99,34 @@ app.post("/confirm-payment", async (req, res) => {
     if (sub) sub.paid = true;
     saveState();
 
-    // === Telegram Notifications ===
+    // === Send Telegram messages sequentially ===
+    console.log("💬 Sending Telegram messages...");
+
     try {
-      await bot.sendMessage(
+      const dmResp = await bot.sendMessage(
         userId,
         "✅ Payment confirmed — your track is officially entered!"
       );
-      console.log("📨 Sent Telegram DM to user", userId);
+      console.log("📨 Sent Telegram DM to user:", dmResp.chat?.id || userId);
     } catch (e) {
-      console.error("⚠️ Failed to DM user:", e.message);
+      console.error("⚠️ Failed to DM user:", e.response?.body || e.message);
     }
 
     try {
-      await bot.sendMessage(
-        `@${CHANNEL}`,
-        `💰 ${userId} added ${amount} SOL to the pot (${potSOL.toFixed(
-          2
-        )} SOL total)`
+      const channelResp = await bot.sendMessage(
+        "@sunolabs_submissions",
+        `💰 ${userId} added ${amount} SOL to the pot (${potSOL.toFixed(2)} SOL total)`
       );
-      console.log("📣 Announced payment in channel.");
+      console.log("📣 Posted in channel:", channelResp.chat?.title || "unknown");
     } catch (e) {
-      console.error("⚠️ Failed to post in channel:", e.message);
+      console.error("⚠️ Failed to post in channel:", e.response?.body || e.message);
     }
 
+    // Short grace delay to ensure logs flush before response
+    await new Promise((r) => setTimeout(r, 300));
     res.json({ ok: true });
   } catch (err) {
-    console.error("⚠️ confirm-payment error:", err);
+    console.error("💥 confirm-payment error:", err.stack || err);
     res.status(500).json({ error: err.message || "Internal server error" });
   }
 });
