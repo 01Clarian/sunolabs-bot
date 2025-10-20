@@ -2,6 +2,7 @@
 import TelegramBot from "node-telegram-bot-api";
 import cron from "node-cron";
 import fs from "fs";
+import express from "express";
 import { Connection, Keypair, PublicKey } from "@solana/web3.js";
 import { encodeURL, findReference } from "@solana/pay";
 import BigNumber from "bignumber.js";
@@ -13,26 +14,23 @@ const CHANNEL = "sunolabs_submissions";
 
 // === SOLANA CONFIG ===
 const TREASURY = new PublicKey("98tf4zU5WhLmsCt1D4HQH5Ej9C5aFwCz8KQwykmKvDDQ");
-
-// ✅ Use Helius RPC for faster indexing
 const RPC_URL =
   process.env.SOLANA_RPC_URL ||
   "https://mainnet.helius-rpc.com/?api-key=f6691497-4961-41e1-9a08-53f30c65bf43";
-
 const connection = new Connection(RPC_URL, "confirmed");
+
+// === STATE ===
 let potSOL = 0;
 let pendingPayments = []; // { userId, username, reference, confirmed }
-
-// === SAVE PATH ===
-const SAVE_FILE = fs.existsSync("/data")
-  ? "/data/submissions.json"
-  : "./submissions.json";
-
 let submissions = [];
 let phase = "submissions";
 let nextRoundTime = null;
 
-// === UTILS ===
+// === FILE SAVE ===
+const SAVE_FILE = fs.existsSync("/data")
+  ? "/data/submissions.json"
+  : "./submissions.json";
+
 function saveState() {
   try {
     fs.writeFileSync(
@@ -65,6 +63,47 @@ loadState();
 
 console.log("🚀 SunoLabs Bot started at", new Date().toISOString());
 
+// === EXPRESS SERVER (for instant confirmation) ===
+const app = express();
+app.use(express.json());
+const PORT = process.env.PORT || 8080;
+
+// ✅ Webhook from payment app
+app.post("/confirm-payment", async (req, res) => {
+  try {
+    const { signature, reference, userId, amount } = req.body;
+    console.log("✅ Received payment confirmation:", signature, reference);
+
+    const entry = pendingPayments.find((p) => p.reference === reference);
+    if (entry && !entry.confirmed) {
+      entry.confirmed = true;
+      potSOL += parseFloat(amount) || 0.01;
+      const submission = submissions.find((s) => s.userId === entry.userId);
+      if (submission) submission.paid = true;
+      saveState();
+
+      await bot.sendMessage(
+        entry.userId,
+        "✅ Payment confirmed instantly — your track is officially entered!"
+      );
+      await bot.sendMessage(
+        `@${CHANNEL}`,
+        `💰 ${entry.username} added ${amount || 0.01} SOL to the pot (${potSOL.toFixed(
+          2
+        )} SOL total)`
+      );
+    }
+    res.sendStatus(200);
+  } catch (e) {
+    console.error("⚠️ Confirm-payment error:", e.message);
+    res.sendStatus(500);
+  }
+});
+
+app.listen(PORT, () =>
+  console.log(`🌐 Express listener for confirmations running on ${PORT}`)
+);
+
 // === HANDLE AUDIO SUBMISSIONS ===
 bot.on("message", async (msg) => {
   if (msg.chat.type !== "private" || !msg.audio) return;
@@ -74,7 +113,6 @@ bot.on("message", async (msg) => {
     : msg.from.first_name || "Unknown";
   const userId = msg.from.id;
 
-  // prevent new entries during voting
   if (phase === "voting") {
     const diff = nextRoundTime ? nextRoundTime - Date.now() : 0;
     const hours = Math.max(0, Math.floor(diff / 3600000));
@@ -86,7 +124,6 @@ bot.on("message", async (msg) => {
     return;
   }
 
-  // prevent duplicates
   if (submissions.find((s) => s.userId === userId)) {
     await bot.sendMessage(
       msg.chat.id,
@@ -96,11 +133,10 @@ bot.on("message", async (msg) => {
     return;
   }
 
-  // === Generate Solana Pay Link ===
   const reference = Keypair.generate().publicKey;
   const amount = new BigNumber(0.01);
 
-  const redirectLink = `https://sunolabs-redirect.onrender.com/pay?recipient=${TREASURY.toBase58()}&amount=0.01&reference=${reference.toBase58()}&label=SunoLabs%20Entry&message=Confirm%20entry%20for%20${encodeURIComponent(
+  const redirectLink = `https://sunolabs-redirect.onrender.com/pay?recipient=${TREASURY.toBase58()}&amount=0.01&reference=${reference.toBase58()}&userId=${userId}&label=SunoLabs%20Entry&message=Confirm%20entry%20for%20${encodeURIComponent(
     user
   )}`;
 
@@ -129,55 +165,6 @@ bot.on("message", async (msg) => {
   });
   saveState();
 });
-
-// === PAYMENT WATCHER (parallel-safe) ===
-setInterval(async () => {
-  console.log("🔍 Scanning for new payments...");
-
-  const unconfirmed = pendingPayments.filter((x) => !x.confirmed);
-  if (unconfirmed.length === 0) {
-    console.log("⏸️ No pending payments.");
-    return;
-  }
-
-  // Run all lookups concurrently to avoid waiting serially
-  await Promise.all(
-    unconfirmed.map(async (p) => {
-      try {
-        const sigInfo = await findReference(
-          connection,
-          new PublicKey(p.reference),
-          { finality: "confirmed" }
-        );
-
-        if (sigInfo?.signature) {
-          console.log("✅ Payment found for:", p.username, sigInfo.signature);
-          p.confirmed = true;
-          potSOL += 0.01;
-          saveState();
-
-          const entry = submissions.find((s) => s.userId === p.userId);
-          if (entry) entry.paid = true;
-
-          await bot.sendMessage(
-            `@${CHANNEL}`,
-            `💰 ${p.username} contributed 0.01 SOL — added to the POT (${potSOL.toFixed(
-              2
-            )} SOL)`
-          );
-          await bot.sendMessage(
-            p.userId,
-            "✅ Payment confirmed — your track is now officially entered!"
-          );
-        }
-      } catch {
-        console.log(`⏳ Still waiting for ${p.username}...`);
-      }
-    })
-  );
-
-  process.stdout.write(""); // flush logs immediately to Render
-}, 20000); // every 20 seconds
 
 // === HANDLE VOTES ===
 bot.on("callback_query", async (q) => {
@@ -297,20 +284,19 @@ async function announceWinners() {
 if (!process.env.CRON_STARTED) {
   process.env.CRON_STARTED = true;
   cron.schedule("0 0 * * *", async () => {
-    console.log("🎬 Starting daily cycle...");
+    console.log("🎬 Starting daily cycle…");
     await postSubmissions();
     setTimeout(async () => {
-      console.log("🕒 Announcing daily winners...");
+      console.log("🕒 Announcing daily winners…");
       await announceWinners();
     }, 12 * 60 * 60 * 1000);
   });
 }
 
-// === HEARTBEAT TO KEEP RENDER ALIVE ===
+// === HEARTBEAT ===
 setInterval(() => {
   console.log("⏰ Bot heartbeat — still alive", new Date().toISOString());
   process.stdout.write("");
 }, 15000);
 
-console.log("✅ SunoLabs Bot (with Solana Pay tracking) running...");
-
+console.log("✅ SunoLabs Bot (with Solana Pay direct confirmation) running…");
