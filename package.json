@@ -4,16 +4,17 @@
   "main": "index.js",
   "type": "module",
   "scripts": {
-    "start": "node index.js"
+    "start": "node index.js",
+    "webhook": "node webhook.js"
   },
-    "dependencies": {
+  "dependencies": {
     "express": "^4.19.2",
-    "node-telegram-bot-api": "^0.66.0",
-    "webhook": "node webhook.js",
-    "node-cron": "^3.0.3",
-     "cors": "^2.8.5",
-    "@solana/web3.js": "^1.95.0",
-    "@solana/pay": "^0.2.0",
+    "cors": "^2.8.5",
+    "node-telegram-bot-api": "^0.64.0",
+    "cron": "^3.1.0",
+    "fs-extra": "^11.2.0",
+    "@solana/web3.js": "^1.95.8",
+    "@solana/pay": "^0.3.0",
     "bignumber.js": "^9.1.2"
-    }
+  }
 }
