@@ -63,7 +63,9 @@ function loadState() {
 loadState();
 
 // === PAYMENT QUEUE PROCESSOR (shared disk with webhook) ===
-const QUEUE_PATH = "/data/payments.json";
+const QUEUE_PATH = fs.existsSync("/data")
+  ? "/data/payments.json"
+  : "./data/payments.json";
 
 async function processPaymentQueue() {
   if (!fs.existsSync(QUEUE_PATH)) return;
@@ -93,7 +95,7 @@ async function processPaymentQueue() {
         userId,
         username: userId,
         reference,
-        confirmed: true,
+        confirmed: true
       });
 
       potSOL += parseFloat(amount) || 0.01;
@@ -131,10 +133,9 @@ app.use(cors());
 app.use(express.json());
 const PORT = process.env.PORT || 8080;
 
-// Keep internal endpoints in case you ever test direct forwarding
 app.post("/update-state", async (req, res) => {
   try {
-    const { signature, reference, userId, amount } = req.body;
+    const { reference, userId, amount } = req.body;
     console.log("💾 Update received from webhook:", { reference, amount });
 
     if (!pendingPayments.find((p) => p.reference === reference)) {
@@ -142,7 +143,7 @@ app.post("/update-state", async (req, res) => {
         userId,
         username: userId,
         reference,
-        confirmed: true,
+        confirmed: true
       });
       potSOL += parseFloat(amount) || 0.01;
 
@@ -213,7 +214,7 @@ bot.on("message", async (msg) => {
     userId,
     username: user,
     reference: reference.toBase58(),
-    confirmed: false,
+    confirmed: false
   });
   saveState();
 
@@ -230,7 +231,7 @@ bot.on("message", async (msg) => {
     title: msg.audio.file_name || "Untitled Track",
     votes: 0,
     voters: [],
-    paid: false,
+    paid: false
   });
   saveState();
 });
@@ -259,11 +260,13 @@ bot.on("callback_query", async (q) => {
       parse_mode: "Markdown",
       reply_markup: {
         inline_keyboard: [
-          [{ text: "🔥 Vote", callback_data: `vote_${entry.userId}` }],
-        ],
-      },
+          [{ text: "🔥 Vote", callback_data: `vote_${entry.userId}` }]
+        ]
+      }
     });
-  } catch {}
+  } catch (err) {
+    console.error("⚠️ Failed to edit message caption:", err.message);
+  }
   bot.answerCallbackQuery(q.id, { text: "✅ Vote recorded!" });
 });
 
@@ -294,9 +297,9 @@ async function postSubmissions() {
         parse_mode: "Markdown",
         reply_markup: {
           inline_keyboard: [
-            [{ text: "🔥 Vote", callback_data: `vote_${s.userId}` }],
-          ],
-        ],
+            [{ text: "🔥 Vote", callback_data: `vote_${s.userId}` }]
+          ]
+        }
       });
       await new Promise((res) => setTimeout(res, 1500));
     } catch (e) {
@@ -372,4 +375,5 @@ setInterval(() => {
 console.log(
   "✅ SunoLabs Bot (with Solana Pay direct confirmation + Persistent Queue) running…"
 );
+
 
