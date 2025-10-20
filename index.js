@@ -3,7 +3,6 @@ import TelegramBot from "node-telegram-bot-api";
 import cron from "node-cron";
 import fs from "fs";
 import express from "express";
-import cors from "cors"; // ✅ Added for CORS fix
 import { Connection, Keypair, PublicKey } from "@solana/web3.js";
 import { encodeURL, findReference } from "@solana/pay";
 import BigNumber from "bignumber.js";
@@ -63,12 +62,6 @@ function loadState() {
 loadState();
 
 console.log("🚀 SunoLabs Bot started at", new Date().toISOString());
-
-// === EXPRESS SERVER (for instant confirmation) ===
-const app = express();
-app.use(cors()); // ✅ Enable CORS so frontend can POST to this server
-app.use(express.json());
-const PORT = process.env.PORT || 8080;
 
 // ✅ Webhook from payment app
 app.post("/confirm-payment", async (req, res) => {
