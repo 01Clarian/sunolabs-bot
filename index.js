@@ -3,23 +3,24 @@ import TelegramBot from "node-telegram-bot-api";
 import cron from "node-cron";
 import fs from "fs";
 import { Connection, Keypair, PublicKey } from "@solana/web3.js";
-import { encodeURL, findReference } from "@solana/pay";
+import { findReference } from "@solana/pay";
 import BigNumber from "bignumber.js";
 
 // === TELEGRAM CONFIG ===
 const token = process.env.BOT_TOKEN;
 const bot = new TelegramBot(token, { polling: true });
-const CHANNEL = "sunolabs_submissions";
+const CHANNEL = "sunolabs_submissions"; // without @
 
 // === SOLANA CONFIG ===
 const TREASURY = new PublicKey("98tf4zU5WhLmsCt1D4HQH5Ej9C5aFwCz8KQwykmKvDDQ");
 
-// ✅ Use Helius RPC for faster indexing
+// ✅ Use Helius RPC (fast indexing)
 const RPC_URL =
   process.env.SOLANA_RPC_URL ||
   "https://mainnet.helius-rpc.com/?api-key=f6691497-4961-41e1-9a08-53f30c65bf43";
 
 const connection = new Connection(RPC_URL, "confirmed");
+
 let potSOL = 0;
 let pendingPayments = []; // { userId, username, reference, confirmed }
 
@@ -74,7 +75,6 @@ bot.on("message", async (msg) => {
     : msg.from.first_name || "Unknown";
   const userId = msg.from.id;
 
-  // prevent new entries during voting
   if (phase === "voting") {
     const diff = nextRoundTime ? nextRoundTime - Date.now() : 0;
     const hours = Math.max(0, Math.floor(diff / 3600000));
@@ -86,7 +86,6 @@ bot.on("message", async (msg) => {
     return;
   }
 
-  // prevent duplicates
   if (submissions.find((s) => s.userId === userId)) {
     await bot.sendMessage(
       msg.chat.id,
@@ -96,10 +95,9 @@ bot.on("message", async (msg) => {
     return;
   }
 
-  // === Generate Solana Pay Link ===
+  // === Generate Solana Pay Redirect ===
   const reference = Keypair.generate().publicKey;
   const amount = new BigNumber(0.01);
-
   const redirectLink = `https://sunolabs-redirect.onrender.com/pay?recipient=${TREASURY.toBase58()}&amount=0.01&reference=${reference.toBase58()}&label=SunoLabs%20Entry&message=Confirm%20entry%20for%20${encodeURIComponent(
     user
   )}`;
@@ -157,16 +155,17 @@ setInterval(async () => {
             2
           )} SOL)`
         );
+
         await bot.sendMessage(
           p.userId,
           "✅ Payment confirmed — your track is now officially entered!"
         );
       }
-    } catch (e) {
+    } catch {
       console.log(`⏳ Still waiting for ${p.username}...`);
     }
   }
-}, 60000);
+}, 20000); // every 20s
 
 // === HANDLE VOTES ===
 bot.on("callback_query", async (q) => {
