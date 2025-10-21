@@ -111,7 +111,6 @@ app.post("/confirm-payment", async (req, res) => {
     const userKey = String(userId);
     console.log("✅ Received payment confirmation:", { reference, amount, userKey });
 
-    // ✅ Find existing pending payment
     let existing = pendingPayments.find((p) => p.reference === reference);
 
     if (existing && existing.confirmed) {
@@ -119,7 +118,6 @@ app.post("/confirm-payment", async (req, res) => {
       return res.json({ ok: true, message: "Already processed" });
     }
 
-    // ✅ Mark or create confirmation
     if (existing) {
       existing.confirmed = true;
       console.log("♻️ Marked existing reference as confirmed:", reference);
@@ -133,10 +131,8 @@ app.post("/confirm-payment", async (req, res) => {
       console.log("🆕 Added new confirmed payment:", reference);
     }
 
-    // ✅ Update totals
     potSOL += parseFloat(amount) || 0.01;
 
-    // ✅ Find and mark submission as paid
     const sub = submissions.find((s) => String(s.userId) === userKey);
     if (sub) {
       sub.paid = true;
@@ -149,7 +145,6 @@ app.post("/confirm-payment", async (req, res) => {
 
     const displayPot = potSOL * 0.5;
 
-    // ✅ Send DM confirmation
     try {
       await bot.sendMessage(
         userId,
@@ -159,7 +154,6 @@ app.post("/confirm-payment", async (req, res) => {
       console.error("⚠️ DM error:", e.message);
     }
 
-    // ✅ Channel update
     try {
       await bot.sendMessage(
         `@${CHANNEL}`,
@@ -269,7 +263,7 @@ async function postSubmissions() {
   const paidSubs = submissions.filter((s) => s.paid);
   if (!paidSubs.length) {
     console.log("🚫 No paid submissions this round.");
-    return;
+    return false;
   }
 
   phase = "voting";
@@ -296,7 +290,9 @@ async function postSubmissions() {
     });
     await new Promise((r) => setTimeout(r, 1200));
   }
+
   console.log("✅ Posted all paid submissions.");
+  return true;
 }
 
 // === PAYOUT FUNCTION ===
@@ -362,11 +358,21 @@ if (!process.env.CRON_STARTED) {
   process.env.CRON_STARTED = true;
   cron.schedule("*/5 * * * *", async () => {
     console.log("🎬 5-minute cycle — Posting submissions now…");
-    await postSubmissions();
+    const posted = await postSubmissions();
+
+    // record when voting started
+    if (posted) nextRoundTime = Date.now();
+
+    // wait ~4.5 minutes before announcing, to ensure voting phase actually ran
     setTimeout(async () => {
+      const elapsed = nextRoundTime ? (Date.now() - nextRoundTime) / 1000 : 0;
+      if (phase !== "voting" || elapsed < 240) {
+        console.log("⏳ Skipping premature announce — voting still active.");
+        return;
+      }
       console.log("🕒 Voting closed — Announcing winners…");
       await announceWinners();
-    }, 5 * 60 * 1000);
+    }, 4.5 * 60 * 1000);
   });
 }
 
