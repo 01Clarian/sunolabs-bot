@@ -1040,7 +1040,7 @@ async function startVoting() {
   try {
     await bot.sendMessage(
       `@${MAIN_CHANNEL}`,
-      `🗳️ VOTING STARTED!\n\n🎵 ${uploaders.length} track${uploaders.length !== 1 ? 's' : ''} competing\n⏰ ${votingMinutes} minute${votingMinutes !== 1 ? 's' : ''} to vote!\n\n💰 Prize Pool: ${treasurySUNO.toLocaleString()} SUNO\n🎰 Bonus Prize: +${treasuryBonus.toLocaleString()} SUNO (1/500)\n\n🔥 Listen to tracks & vote for your favorite!\n📍 Vote here: https://t.me/${CHANNEL}\n\n🏆 Winners get 80% of prize pool\n💰 Voters who pick the winner share 20%!`
+      `🗳️ VOTING STARTED!\n\n🎵 ${uploaders.length} track${uploaders.length !== 1 ? 's' : ''} competing\n⏰ ${votingMinutes} minute${votingMinutes !== 1 ? 's' : ''} to vote!\n\n💰 Prize Pool: Loading... SUNO\n🎰 Bonus Prize: +${treasuryBonus.toLocaleString()} SUNO (1/500)\n\n🔥 Listen to tracks & vote for your favorite!\n📍 Vote here: https://t.me/${CHANNEL}\n\n🏆 Winners get 80% of prize pool\n💰 Voters who pick the winner share 20%!`
     );
   } catch {}
 
