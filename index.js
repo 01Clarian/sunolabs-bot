@@ -770,13 +770,19 @@ app.post("/confirm-payment", paymentLimiter, async (req, res) => {
 
     console.log(`✅ ${userSUNO.toLocaleString()} SUNO → ${senderWallet.substring(0, 8)}...`);
 
-    // === ADD COMPETITION POOL TO TREASURY ===
-    treasurySUNO += competitionSUNO;
-    actualTreasuryBalance += competitionSUNO;  // Track real treasury balance
-    console.log(`\n🏦 Treasury updated: +${competitionSUNO.toLocaleString()} SUNO`);
-    console.log(`   Round Pool: ${treasurySUNO.toLocaleString()} SUNO`);
-    console.log(`   Actual Treasury: ${actualTreasuryBalance.toLocaleString()} SUNO`);
-    console.log(`   Bonus Prize: ${calculateTreasuryBonus().toLocaleString()} SUNO (${(getTreasuryBonusPercentage() * 100).toFixed(0)}%)`);
+    // === SPLIT COMPETITION POOL ===
+    // 65% goes to round prize pool (gets distributed)
+    // 35% goes to permanent treasury (saved, only used for bonus)
+    const roundPool = Math.floor(competitionSUNO * 0.65);
+    const permanentTreasury = competitionSUNO - roundPool;
+    
+    treasurySUNO += roundPool;
+    actualTreasuryBalance += permanentTreasury;
+    
+    console.log(`\n🏦 Pool Distribution:`);
+    console.log(`   Round Pool: +${roundPool.toLocaleString()} SUNO (65%) → Total: ${treasurySUNO.toLocaleString()} SUNO`);
+    console.log(`   Permanent Treasury: +${permanentTreasury.toLocaleString()} SUNO (35%) → Total: ${actualTreasuryBalance.toLocaleString()} SUNO`);
+    console.log(`   Bonus Prize Available: ${calculateTreasuryBonus().toLocaleString()} SUNO (${(getTreasuryBonusPercentage() * 100).toFixed(0)}%)`);
 
     // === SAVE USER DATA ===
     const userData = {
