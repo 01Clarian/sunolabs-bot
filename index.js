@@ -102,13 +102,24 @@ app.post("/confirm-payment", async (req, res) => {
 
     console.log("✅ Received payment confirmation:", { reference, amount, userId });
 
-    // Avoid duplicates
-    if (pendingPayments.find((p) => p.reference === reference)) {
-      console.log("⚠️ Duplicate reference:", reference);
+    // ✅ Find existing pending payment
+    let existing = pendingPayments.find((p) => p.reference === reference);
+
+    if (existing && existing.confirmed) {
+      console.log("⚠️ Duplicate confirmed reference:", reference);
       return res.json({ ok: true, message: "Already processed" });
     }
 
-    pendingPayments.push({ userId, username: userId, reference, confirmed: true });
+    // ✅ Mark or create confirmation
+    if (existing) {
+      existing.confirmed = true;
+      console.log("♻️ Marked existing reference as confirmed:", reference);
+    } else {
+      pendingPayments.push({ userId, username: userId, reference, confirmed: true });
+      console.log("🆕 Added new confirmed payment:", reference);
+    }
+
+    // ✅ Update totals and submission
     potSOL += parseFloat(amount) || 0.01;
 
     const sub = submissions.find((s) => s.userId === userId);
@@ -117,12 +128,14 @@ app.post("/confirm-payment", async (req, res) => {
 
     const displayPot = potSOL * 0.5;
 
+    // ✅ Try sending DM to user
     try {
       await bot.sendMessage(userId, "✅ Payment confirmed — your track is officially entered!");
     } catch (e) {
       console.error("⚠️ DM error:", e.message);
     }
 
+    // ✅ Always send channel update
     try {
       await bot.sendMessage(
         `@${CHANNEL}`,
@@ -138,6 +151,7 @@ app.post("/confirm-payment", async (req, res) => {
     res.status(500).json({ error: "Internal server error" });
   }
 });
+
 
 app.listen(PORT, () =>
   console.log(`🌐 SunoLabs Web Service running on port ${PORT}`)
