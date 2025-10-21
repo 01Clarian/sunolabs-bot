@@ -354,7 +354,8 @@ async function startVoting() {
     );
     console.log("✅ Posted voting announcement to main channel");
   } catch (err) {
-    console.error("❌ Failed to announce voting in main channel:", err.message);
+    console.error("❌ Failed to announce voting in main channel:", err);
+    console.error("Error details:", JSON.stringify(err, null, 2));
   }
 
   // Post submissions to voting channel
