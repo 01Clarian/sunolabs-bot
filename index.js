@@ -17,9 +17,10 @@ import {
   createAssociatedTokenAccountInstruction,
   createTransferInstruction,
   TOKEN_PROGRAM_ID,
-  ASSOCIATED_TOKEN_PROGRAM_ID,
 } from "@solana/spl-token";
 import bs58 from "bs58";
+import { PumpSdk, getBuyTokenAmountFromSolAmount } from "@pump-fun/pump-sdk";
+import BN from "bn.js";
 
 // === TELEGRAM CONFIG ===
 const token = process.env.BOT_TOKEN;
@@ -64,11 +65,6 @@ const TREASURY_PRIVATE_KEY = process.env.BOT_PRIVATE_KEY
   : null;
 if (!TREASURY_PRIVATE_KEY) throw new Error("❌ BOT_PRIVATE_KEY missing!");
 const TREASURY_KEYPAIR = Keypair.fromSecretKey(TREASURY_PRIVATE_KEY);
-
-// === PUMP.FUN CONFIG ===
-const PUMP_PROGRAM = new PublicKey("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P");
-const PUMP_GLOBAL = new PublicKey("4wTV1YmiEkRvAtNtsSGPtUrqRYQMe5SKy2uB4Jjaxnjf");
-const PUMP_FEE = new PublicKey("CebN5WGQ4jvEPvsVU4EoHEpgzq1VV7AbicfhtW4xC9iM");
 
 // === STATE ===
 let treasurySOL = 0;
@@ -164,7 +160,7 @@ async function transferTokensToRecipient(tokenAmount, recipientWallet) {
       console.log("📝 Creating recipient token account...");
       tx.add(
         createAssociatedTokenAccountInstruction(
-          TREASURY_KEYPAIR.publicKey, // Payer
+          TREASURY_KEYPAIR.publicKey,
           recipientTokenAccount,
           recipientPubkey,
           TOKEN_MINT
@@ -210,6 +206,8 @@ async function checkIfBonded() {
   try {
     console.log("🔍 Checking if SUNO has graduated from pump.fun...");
     
+    const PUMP_PROGRAM = new PublicKey("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P");
+    
     // Derive bonding curve PDA
     const [bondingCurve] = PublicKey.findProgramAddressSync(
       [Buffer.from("bonding-curve"), TOKEN_MINT.toBuffer()],
@@ -220,77 +218,69 @@ async function checkIfBonded() {
     
     if (!accountInfo) {
       console.log("✅ Token has graduated to Raydium! Using Jupiter...");
-      return true; // Bonded/graduated
+      return true;
     }
     
     // Check if bonding curve is complete
     const data = accountInfo.data;
-    const complete = data[8]; // Byte 8 indicates completion
+    const complete = data[8];
     
     if (complete === 1) {
       console.log("✅ Bonding curve complete! Token graduated. Using Jupiter...");
       return true;
     }
     
-    console.log("📊 Token still on pump.fun bonding curve. Using pump.fun direct buy...");
+    console.log("📊 Token still on pump.fun bonding curve. Using official SDK...");
     return false;
     
   } catch (err) {
     console.error(`⚠️ Bond check error: ${err.message}. Defaulting to Jupiter...`);
-    return true; // Default to Jupiter on error
+    return true;
   }
 }
 
-// === PUMP.FUN BUY (Direct Implementation) ===
+// === PUMP.FUN BUY (Using Official SDK) ===
 async function buyOnPumpFun(solAmount, recipientWallet) {
   try {
-    console.log(`🚀 Starting pump.fun buy: ${solAmount.toFixed(4)} SOL`);
+    console.log(`🚀 Starting pump.fun buy with OFFICIAL SDK: ${solAmount.toFixed(4)} SOL`);
     console.log(`📍 Will buy to treasury then transfer to: ${recipientWallet.substring(0, 8)}...`);
     
-    const lamports = Math.floor(solAmount * 1e9);
-    console.log(`💰 Buy amount: ${lamports.toLocaleString()} lamports`);
+    const lamports = new BN(Math.floor(solAmount * 1e9));
+    console.log(`💰 Buy amount: ${lamports.toString()} lamports`);
     
-    // Derive bonding curve PDA
-    const [bondingCurve] = PublicKey.findProgramAddressSync(
-      [Buffer.from("bonding-curve"), TOKEN_MINT.toBuffer()],
-      PUMP_PROGRAM
-    );
+    // Initialize official SDK
+    console.log("🔧 Initializing official Pump SDK...");
+    const sdk = new PumpSdk(connection);
     
-    // Derive associated bonding curve PDA
-    const [associatedBondingCurve] = PublicKey.findProgramAddressSync(
-      [
-        bondingCurve.toBuffer(),
-        TOKEN_PROGRAM_ID.toBuffer(),
-        TOKEN_MINT.toBuffer()
-      ],
-      ASSOCIATED_TOKEN_PROGRAM_ID
-    );
+    // Fetch global state
+    console.log("📊 Fetching global state...");
+    const global = await sdk.fetchGlobal();
     
-    // Get treasury token account
-    const treasuryTokenAccount = await getAssociatedTokenAddress(
-      TOKEN_MINT,
-      TREASURY_KEYPAIR.publicKey
-    );
+    // Fetch buy state (bonding curve info)
+    console.log("🔍 Fetching buy state for token...");
+    const { bondingCurveAccountInfo, bondingCurve, associatedUserAccountInfo } = 
+      await sdk.fetchBuyState(TOKEN_MINT, TREASURY_KEYPAIR.publicKey);
     
-    // Check if treasury ATA exists
-    const treasuryATA = await connection.getAccountInfo(treasuryTokenAccount);
+    // Calculate token amount from SOL
+    const tokenAmount = getBuyTokenAmountFromSolAmount(global, bondingCurve, lamports);
+    console.log(`💎 Expected tokens: ${tokenAmount.toString()}`);
     
-    console.log("🔨 Building pump.fun buy instruction...");
+    // Get buy instructions from SDK
+    console.log("🔨 Building buy instructions with SDK...");
+    const instructions = await sdk.buyInstructions({
+      global,
+      bondingCurveAccountInfo,
+      bondingCurve,
+      associatedUserAccountInfo,
+      mint: TOKEN_MINT,
+      user: TREASURY_KEYPAIR.publicKey,
+      solAmount: lamports,
+      amount: tokenAmount,
+      slippage: 10, // 10% slippage
+    });
     
+    // Build transaction
     const tx = new Transaction();
-    
-    // Create treasury ATA if needed
-    if (!treasuryATA) {
-      console.log("📝 Creating treasury token account...");
-      tx.add(
-        createAssociatedTokenAccountInstruction(
-          TREASURY_KEYPAIR.publicKey,
-          treasuryTokenAccount,
-          TREASURY_KEYPAIR.publicKey,
-          TOKEN_MINT
-        )
-      );
-    }
     
     // Add compute budget
     tx.add(
@@ -298,45 +288,8 @@ async function buyOnPumpFun(solAmount, recipientWallet) {
       ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 200000 })
     );
     
-    // Build buy instruction data
-    // Discriminator for buy: [102, 6, 61, 18, 1, 218, 235, 234]
-    const buyDiscriminator = Buffer.from([102, 6, 61, 18, 1, 218, 235, 234]);
-    const amountBuffer = Buffer.alloc(8);
-    amountBuffer.writeBigUInt64LE(BigInt(lamports));
-    const maxSolCostBuffer = Buffer.alloc(8);
-    maxSolCostBuffer.writeBigUInt64LE(BigInt(Math.floor(lamports * 1.1))); // 10% slippage
-    
-    const data = Buffer.concat([buyDiscriminator, amountBuffer, maxSolCostBuffer]);
-    
-    // Derive event authority PDA
-    const [eventAuthority] = PublicKey.findProgramAddressSync(
-      [Buffer.from("__event_authority")],
-      PUMP_PROGRAM
-    );
-    
-    console.log(`📋 Event Authority: ${eventAuthority.toBase58().substring(0, 8)}...`);
-    
-    // Build accounts array (12 accounts required!)
-    const keys = [
-      { pubkey: PUMP_GLOBAL, isSigner: false, isWritable: false },           // 0: global
-      { pubkey: PUMP_FEE, isSigner: false, isWritable: true },               // 1: feeRecipient
-      { pubkey: TOKEN_MINT, isSigner: false, isWritable: false },            // 2: mint
-      { pubkey: bondingCurve, isSigner: false, isWritable: true },           // 3: bondingCurve
-      { pubkey: associatedBondingCurve, isSigner: false, isWritable: true }, // 4: associatedBondingCurve
-      { pubkey: treasuryTokenAccount, isSigner: false, isWritable: true },   // 5: associatedUser
-      { pubkey: TREASURY_KEYPAIR.publicKey, isSigner: true, isWritable: true }, // 6: user
-      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false }, // 7: systemProgram
-      { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },      // 8: tokenProgram
-      { pubkey: new PublicKey("SysvarRent111111111111111111111111111111111"), isSigner: false, isWritable: false }, // 9: rent
-      { pubkey: eventAuthority, isSigner: false, isWritable: false },        // 10: eventAuthority
-      { pubkey: PUMP_PROGRAM, isSigner: false, isWritable: false },          // 11: program
-    ];
-    
-    tx.add({
-      keys,
-      programId: PUMP_PROGRAM,
-      data,
-    });
+    // Add all SDK instructions
+    instructions.forEach(ix => tx.add(ix));
     
     tx.feePayer = TREASURY_KEYPAIR.publicKey;
     const { blockhash } = await connection.getLatestBlockhash();
@@ -359,27 +312,33 @@ async function buyOnPumpFun(solAmount, recipientWallet) {
     // Wait for balance update
     await new Promise(r => setTimeout(r, 3000));
     
+    // Get treasury token account
+    const treasuryTokenAccount = await getAssociatedTokenAddress(
+      TOKEN_MINT,
+      TREASURY_KEYPAIR.publicKey
+    );
+    
     // Get tokens bought
     const balance = await connection.getTokenAccountBalance(treasuryTokenAccount);
-    const tokenAmount = parseInt(balance.value.amount);
+    const receivedTokens = parseInt(balance.value.amount);
     
-    console.log(`🪙 Treasury received ${tokenAmount.toLocaleString()} SUNO tokens`);
+    console.log(`🪙 Treasury received ${receivedTokens.toLocaleString()} SUNO tokens`);
     
     // Transfer to recipient
-    console.log(`\n📤 Transferring ${tokenAmount.toLocaleString()} SUNO to recipient...`);
-    const transferSuccess = await transferTokensToRecipient(tokenAmount, recipientWallet);
+    console.log(`\n📤 Transferring ${receivedTokens.toLocaleString()} SUNO to recipient...`);
+    const transferSuccess = await transferTokensToRecipient(receivedTokens, recipientWallet);
     
     if (!transferSuccess) {
       console.error("❌ Transfer failed - tokens stuck in treasury!");
       throw new Error("Failed to transfer tokens to recipient");
     }
     
-    console.log(`✅ Transfer complete! ${tokenAmount.toLocaleString()} SUNO → ${recipientWallet.substring(0, 8)}...`);
+    console.log(`✅ Transfer complete! ${receivedTokens.toLocaleString()} SUNO → ${recipientWallet.substring(0, 8)}...`);
     
-    return tokenAmount;
+    return receivedTokens;
     
   } catch (err) {
-    console.error(`❌ Pump.fun buy failed: ${err.message}`);
+    console.error(`❌ Pump.fun SDK buy failed: ${err.message}`);
     console.error(err.stack);
     throw err;
   }
@@ -497,7 +456,7 @@ async function buySUNOOnMarket(solAmount, recipientWallet) {
       // Use Jupiter
       sunoAmount = await buyOnJupiter(solAmount, recipientWallet);
     } else {
-      // Use pump.fun
+      // Use pump.fun official SDK
       sunoAmount = await buyOnPumpFun(solAmount, recipientWallet);
     }
     
