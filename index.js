@@ -424,9 +424,22 @@ app.post("/confirm-payment", async (req, res) => {
       const tokenPrice = await getTokenPrice();
       const tokenValue = (tokenAmount * tokenPrice).toFixed(4);
       
+      // Calculate time remaining in submission phase
+      const now = Date.now();
+      let timeMessage = "";
+      
+      if (phase === "submission" && cycleStartTime) {
+        const submissionEndTime = cycleStartTime + (5 * 60 * 1000);
+        const timeRemaining = Math.max(0, submissionEndTime - now);
+        const minutesLeft = Math.ceil(timeRemaining / 60000);
+        timeMessage = `\n⏰ Voting starts in ~${minutesLeft} minute${minutesLeft !== 1 ? 's' : ''}`;
+      } else if (phase === "voting") {
+        timeMessage = `\n⏰ Voting is live now!`;
+      }
+      
       await bot.sendMessage(
         userId,
-        `✅ Purchase complete!\n\n🪙 ${tokenAmount.toLocaleString()} SUNO tokens sent\n💰 Value: ~${tokenValue} SOL\n🏆 Competition entered\n💎 Earning rewards!\n\n📍 https://t.me/sunolabs`
+        `✅ Purchase complete!\n\n🪙 ${tokenAmount.toLocaleString()} SUNO tokens sent\n💰 Value: ~${tokenValue} SOL\n🏆 Competition entered${timeMessage}\n\n📍 https://t.me/sunolabs`
       );
     } catch (e) {
       console.error("⚠️ DM error:", e.message);
@@ -475,7 +488,12 @@ async function sendSOLPayout(destination, amountSOL, reason = "payout") {
 
 // === START NEW CYCLE ===
 async function startNewCycle() {
-  console.log("🔄 Starting new cycle...");
+  console.log("🔄 Starting new submission cycle...");
+  
+  const unpaidCount = submissions.filter(s => !s.paid).length;
+  if (unpaidCount > 0) {
+    console.log(`🧹 Cleaning up ${unpaidCount} unpaid submission(s) from previous cycle`);
+  }
   
   phase = "submission";
   cycleStartTime = Date.now();
@@ -485,39 +503,87 @@ async function startNewCycle() {
   const botUsername = process.env.BOT_USERNAME || 'sunolabs_bot';
   const prizePool = atStakeSOL * STAKE_SPLIT.PRIZES;
   
+  console.log(`🎬 NEW CYCLE: Submission phase (5 min), Prize pool: ${prizePool.toFixed(3)} SOL`);
+  
+  // Announce to main channel
   try {
     await bot.sendMessage(
       `@${MAIN_CHANNEL}`,
-      `🎬 NEW ROUND!\n💰 Prize pool: ${prizePool.toFixed(3)} SOL\n🪙 Buy SUNO + Enter!\n⏰ 5 min\n\nStart: @${botUsername}`
+      `🎬 *NEW ROUND STARTED!*\n\n💰 Prize Pool: ${prizePool.toFixed(3)} SOL\n⏰ 5 minutes to submit your track!\n\n🎮 How to Enter:\n1️⃣ Send audio to @${botUsername}\n2️⃣ Buy SUNO tokens + enter\n3️⃣ Vote for favorites\n4️⃣ Win SOL prizes!\n\n🏆 Top 5 share the prize pool\n💎 Token holders earn passive rewards\n\nGo! ⚡`,
+      { parse_mode: "Markdown" }
     );
+    console.log("✅ Posted cycle start to main channel");
   } catch (err) {
-    console.error("❌ Announce failed:", err.message);
+    console.error("❌ Failed to announce in main channel:", err.message);
   }
 
+  // Announce to voting channel
+  try {
+    await bot.sendMessage(
+      `@${CHANNEL}`,
+      `🎬 *New Round!*\n💰 ${prizePool.toFixed(3)} SOL\n⏰ 5 min to submit\n\nSend audio to the bot!`,
+      { parse_mode: "Markdown" }
+    );
+    console.log("✅ Posted cycle start to voting channel");
+  } catch (err) {
+    console.error("❌ Failed to announce in voting channel:", err.message);
+  }
+
+  // Schedule voting to start in 5 minutes
   setTimeout(() => startVoting(), 5 * 60 * 1000);
 }
 
 // === VOTING ===
 async function startVoting() {
+  console.log(`📋 Starting voting — Total: ${submissions.length}, Paid: ${submissions.filter(s => s.paid).length}`);
+  
   const paidSubs = submissions.filter((s) => s.paid);
   if (!paidSubs.length) {
+    console.log("🚫 No paid submissions this round - skipping to next cycle");
+    
+    // Only announce in main channel, NOT in submissions channel
     try {
-      await bot.sendMessage(`@${CHANNEL}`, "🚫 No submissions — new round in 1 min!");
-    } catch {}
+      await bot.sendMessage(
+        `@${MAIN_CHANNEL}`,
+        `⏰ No entries this round\nNew round starting in 1 minute!`
+      );
+      console.log("✅ Posted no-entries notice to main channel only");
+    } catch (err) {
+      console.error("❌ Failed to announce:", err.message);
+    }
+    
+    // Skip voting, go straight to next cycle
+    phase = "cooldown";
+    saveState();
     setTimeout(() => startNewCycle(), 60 * 1000);
     return;
   }
 
+  console.log(`✅ ${paidSubs.length} paid submission(s), starting voting...`);
+  
   phase = "voting";
   nextPhaseTime = Date.now() + 5 * 60 * 1000;
   saveState();
 
   const prizePool = atStakeSOL * STAKE_SPLIT.PRIZES;
 
+  // Announce voting in MAIN channel
+  try {
+    const voteLink = `https://t.me/${CHANNEL}`;
+    await bot.sendMessage(
+      `@${MAIN_CHANNEL}`,
+      `🗳️ VOTING IS LIVE!\n💰 Prize Pool: ${prizePool.toFixed(3)} SOL\n⏰ 5 minutes to vote!\n\n📍 Vote here: ${voteLink}`
+    );
+    console.log("✅ Voting announced in main channel");
+  } catch (err) {
+    console.error("❌ Failed to announce voting in main:", err.message);
+  }
+
+  // Post to voting channel
   try {
     await bot.sendMessage(
       `@${CHANNEL}`,
-      `🗳️ *VOTING!*\n💰 ${prizePool.toFixed(3)} SOL\n⏰ 5 min!`,
+      `🗳️ *VOTING STARTED!*\n💰 Prize Pool: ${prizePool.toFixed(3)} SOL\n⏰ *5 minutes to vote!*\n\n🔥 Vote for your favorites below!`,
       { parse_mode: "Markdown" }
     );
 
@@ -532,6 +598,7 @@ async function startVoting() {
       });
       await new Promise((r) => setTimeout(r, 1200));
     }
+    console.log(`✅ Posted all ${paidSubs.length} submissions to voting channel`);
   } catch (err) {
     console.error("❌ Voting post failed:", err.message);
   }
@@ -717,17 +784,66 @@ app.listen(PORT, async () => {
     await new Promise(resolve => setTimeout(resolve, 1000));
     await bot.setWebHook(webhookUrl);
     console.log("✅ Webhook set");
+    
+    const info = await bot.getWebHookInfo();
+    console.log(`📊 Webhook URL: ${info.url}`);
+    console.log(`📊 Pending updates: ${info.pending_update_count}`);
   } catch (err) {
     console.error("❌ Webhook failed:", err.message);
   }
   
+  // Handle cycle resumption or new cycle
+  const now = Date.now();
+  
   if (!cycleStartTime || phase === "cooldown") {
+    console.log("🚀 No active cycle - starting new cycle in 3 seconds...");
     setTimeout(() => startNewCycle(), 3000);
+  } else if (phase === "submission") {
+    const submissionEndTime = cycleStartTime + (5 * 60 * 1000);
+    const timeLeft = submissionEndTime - now;
+    
+    if (timeLeft <= 0) {
+      console.log("⚠️ Submission phase overdue - starting voting now...");
+      setTimeout(() => startVoting(), 1000);
+    } else {
+      const minutesLeft = Math.ceil(timeLeft / 60000);
+      console.log(`⏰ Resuming submission phase with ${minutesLeft} minute(s) remaining`);
+      setTimeout(() => startVoting(), timeLeft);
+    }
+  } else if (phase === "voting") {
+    if (!nextPhaseTime) {
+      console.log("⚠️ Voting phase but no end time set - announcing winners in 1 min...");
+      setTimeout(() => announceWinners(), 60 * 1000);
+    } else {
+      const timeLeft = nextPhaseTime - now;
+      
+      if (timeLeft <= 0) {
+        console.log("⚠️ Voting phase overdue - announcing winners now...");
+        setTimeout(() => announceWinners(), 1000);
+      } else {
+        const minutesLeft = Math.ceil(timeLeft / 60000);
+        console.log(`⏰ Resuming voting phase with ${minutesLeft} minute(s) remaining`);
+        setTimeout(() => announceWinners(), timeLeft);
+      }
+    }
   }
+  
+  console.log(`📊 Current state: Phase=${phase}, Submissions=${submissions.length}, Treasury=${treasurySOL.toFixed(3)} SOL`);
 });
 
 setInterval(() => {
-  console.log(`⏰ ${new Date().toISOString()} | Phase: ${phase}`);
+  const now = Date.now();
+  let phaseInfo = phase;
+  
+  if (phase === "submission" && cycleStartTime) {
+    const timeLeft = Math.ceil((cycleStartTime + 5 * 60 * 1000 - now) / 60000);
+    phaseInfo = `${phase} (${Math.max(0, timeLeft)}m left)`;
+  } else if (phase === "voting" && nextPhaseTime) {
+    const timeLeft = Math.ceil((nextPhaseTime - now) / 60000);
+    phaseInfo = `${phase} (${Math.max(0, timeLeft)}m left)`;
+  }
+  
+  console.log(`⏰ ${new Date().toISOString()} | Phase: ${phaseInfo} | Entries: ${submissions.filter(s => s.paid).length}`);
 }, 30000);
 
 console.log("✅ SunoLabs Token Bot initialized...");
