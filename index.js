@@ -69,7 +69,6 @@ const TREASURY_KEYPAIR = Keypair.fromSecretKey(TREASURY_PRIVATE_KEY);
 const PUMP_PROGRAM = new PublicKey("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P");
 const PUMP_GLOBAL = new PublicKey("4wTV1YmiEkRvAtNtsSGPtUrqRYQMe5SKy2uB4Jjaxnjf");
 const PUMP_FEE = new PublicKey("CebN5WGQ4jvEPvsVU4EoHEpgzq1VV7AbicfhtW4xC9iM");
-const PUMP_EVENT_AUTHORITY = new PublicKey("Ce6TQqeHC9p8KetsN6JsjHK7UTZk7nasjjnr7XxXp9F1");
 
 // === STATE ===
 let treasurySOL = 0;
@@ -309,20 +308,28 @@ async function buyOnPumpFun(solAmount, recipientWallet) {
     
     const data = Buffer.concat([buyDiscriminator, amountBuffer, maxSolCostBuffer]);
     
-    // Build accounts array
+    // Derive event authority PDA
+    const [eventAuthority] = PublicKey.findProgramAddressSync(
+      [Buffer.from("__event_authority")],
+      PUMP_PROGRAM
+    );
+    
+    console.log(`📋 Event Authority: ${eventAuthority.toBase58().substring(0, 8)}...`);
+    
+    // Build accounts array (12 accounts required!)
     const keys = [
-      { pubkey: PUMP_GLOBAL, isSigner: false, isWritable: false },
-      { pubkey: PUMP_FEE, isSigner: false, isWritable: true },
-      { pubkey: TOKEN_MINT, isSigner: false, isWritable: false },
-      { pubkey: bondingCurve, isSigner: false, isWritable: true },
-      { pubkey: associatedBondingCurve, isSigner: false, isWritable: true },
-      { pubkey: treasuryTokenAccount, isSigner: false, isWritable: true },
-      { pubkey: TREASURY_KEYPAIR.publicKey, isSigner: true, isWritable: true },
-      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
-      { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
-      { pubkey: new PublicKey("SysvarRent111111111111111111111111111111111"), isSigner: false, isWritable: false },
-      { pubkey: PUMP_EVENT_AUTHORITY, isSigner: false, isWritable: false },
-      { pubkey: PUMP_PROGRAM, isSigner: false, isWritable: false },
+      { pubkey: PUMP_GLOBAL, isSigner: false, isWritable: false },           // 0: global
+      { pubkey: PUMP_FEE, isSigner: false, isWritable: true },               // 1: feeRecipient
+      { pubkey: TOKEN_MINT, isSigner: false, isWritable: false },            // 2: mint
+      { pubkey: bondingCurve, isSigner: false, isWritable: true },           // 3: bondingCurve
+      { pubkey: associatedBondingCurve, isSigner: false, isWritable: true }, // 4: associatedBondingCurve
+      { pubkey: treasuryTokenAccount, isSigner: false, isWritable: true },   // 5: associatedUser
+      { pubkey: TREASURY_KEYPAIR.publicKey, isSigner: true, isWritable: true }, // 6: user
+      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false }, // 7: systemProgram
+      { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },      // 8: tokenProgram
+      { pubkey: new PublicKey("SysvarRent111111111111111111111111111111111"), isSigner: false, isWritable: false }, // 9: rent
+      { pubkey: eventAuthority, isSigner: false, isWritable: false },        // 10: eventAuthority
+      { pubkey: PUMP_PROGRAM, isSigner: false, isWritable: false },          // 11: program
     ];
     
     tx.add({
