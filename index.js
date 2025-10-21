@@ -136,25 +136,10 @@ function getWhaleMultiplier(amount) {
   return 1.15 + ((amount - 0.50) / 4.50) * 0.35;
 }
 
-// === LOGGING HELPERS ===
-function logToBoth(message, type = "info") {
-  const timestamp = new Date().toISOString();
-  const logMessage = `[${timestamp}] ${message}`;
-  
-  console.log(logMessage);
-  
-  // Send to redirect service for client-side logs
-  fetch(`${process.env.REDIRECT_URL || 'https://sunolabs-redirect.onrender.com'}/log`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ event: type, detail: message })
-  }).catch(() => {});
-}
-
 // === CHECK IF TOKEN HAS BONDED ===
 async function checkIfBonded() {
   try {
-    logToBoth("🔍 Checking if SUNO has graduated from pump.fun...", "info");
+    console.log("🔍 Checking if SUNO has graduated from pump.fun...");
     
     // Derive bonding curve PDA
     const [bondingCurve] = PublicKey.findProgramAddressSync(
@@ -165,7 +150,7 @@ async function checkIfBonded() {
     const accountInfo = await connection.getAccountInfo(bondingCurve);
     
     if (!accountInfo) {
-      logToBoth("✅ Token has graduated to Raydium! Using Jupiter...", "success");
+      console.log("✅ Token has graduated to Raydium! Using Jupiter...");
       return true; // Bonded/graduated
     }
     
@@ -174,15 +159,15 @@ async function checkIfBonded() {
     const complete = data[8]; // Byte 8 indicates completion
     
     if (complete === 1) {
-      logToBoth("✅ Bonding curve complete! Token graduated. Using Jupiter...", "success");
+      console.log("✅ Bonding curve complete! Token graduated. Using Jupiter...");
       return true;
     }
     
-    logToBoth("📊 Token still on pump.fun bonding curve. Using pump.fun buy...", "info");
+    console.log("📊 Token still on pump.fun bonding curve. Using pump.fun buy...");
     return false;
     
   } catch (err) {
-    logToBoth(`⚠️ Bond check error: ${err.message}. Defaulting to Jupiter...`, "error");
+    console.error(`⚠️ Bond check error: ${err.message}. Defaulting to Jupiter...`);
     return true; // Default to Jupiter on error
   }
 }
@@ -190,7 +175,7 @@ async function checkIfBonded() {
 // === PUMP.FUN BUY ===
 async function buyOnPumpFun(solAmount, recipientWallet) {
   try {
-    logToBoth(`🚀 Starting pump.fun buy: ${solAmount.toFixed(4)} SOL → ${recipientWallet.substring(0, 8)}...`, "info");
+    console.log(`🚀 Starting pump.fun buy: ${solAmount.toFixed(4)} SOL → ${recipientWallet.substring(0, 8)}...`);
     
     const [bondingCurve] = PublicKey.findProgramAddressSync(
       [Buffer.from("bonding-curve"), TOKEN_MINT.toBuffer()],
@@ -217,14 +202,14 @@ async function buyOnPumpFun(solAmount, recipientWallet) {
     const needsATA = !ataInfo;
     
     if (needsATA) {
-      logToBoth("📝 Creating associated token account...", "info");
+      console.log("📝 Creating associated token account...");
     }
     
     // Calculate slippage (1% slippage)
     const slippageBps = 100; // 1%
     const lamports = Math.floor(solAmount * 1e9);
     
-    logToBoth(`💰 Buy amount: ${lamports.toLocaleString()} lamports`, "info");
+    console.log(`💰 Buy amount: ${lamports.toLocaleString()} lamports`);
     
     const tx = new Transaction();
     
@@ -278,29 +263,32 @@ async function buyOnPumpFun(solAmount, recipientWallet) {
     const { blockhash } = await connection.getLatestBlockhash();
     tx.recentBlockhash = blockhash;
     
-    logToBoth("✍️ Signing transaction...", "info");
+    console.log("✍️ Signing transaction...");
     const sig = await connection.sendTransaction(tx, [TREASURY_KEYPAIR], {
       skipPreflight: false,
       preflightCommitment: "confirmed",
     });
     
-    logToBoth(`📤 Transaction sent: ${sig.substring(0, 8)}...`, "success");
-    logToBoth("⏳ Confirming transaction...", "info");
+    console.log(`📤 Transaction sent: ${sig.substring(0, 8)}...`);
+    console.log("⏳ Confirming transaction...");
     
     await connection.confirmTransaction(sig, "confirmed");
     
-    logToBoth(`✅ Pump.fun buy complete! Tx: ${sig}`, "success");
+    console.log(`✅ Pump.fun buy complete! Tx: ${sig}`);
+    console.log(`🔗 https://solscan.io/tx/${sig}`);
     
     // Get token balance
+    await new Promise(r => setTimeout(r, 2000)); // Wait for balance update
     const balance = await connection.getTokenAccountBalance(recipientTokenAccount);
     const tokenAmount = parseInt(balance.value.amount);
     
-    logToBoth(`🪙 Received ${tokenAmount.toLocaleString()} SUNO tokens`, "success");
+    console.log(`🪙 Received ${tokenAmount.toLocaleString()} SUNO tokens`);
     
     return tokenAmount;
     
   } catch (err) {
-    logToBoth(`❌ Pump.fun buy failed: ${err.message}`, "error");
+    console.error(`❌ Pump.fun buy failed: ${err.message}`);
+    console.error(err.stack);
     throw err;
   }
 }
@@ -308,13 +296,17 @@ async function buyOnPumpFun(solAmount, recipientWallet) {
 // === JUPITER SWAP ===
 async function buyOnJupiter(solAmount, recipientWallet) {
   try {
-    logToBoth(`🪐 Starting Jupiter swap: ${solAmount.toFixed(4)} SOL → SUNO`, "info");
+    console.log(`🪐 Starting Jupiter swap: ${solAmount.toFixed(4)} SOL → SUNO`);
     
     const lamports = Math.floor(solAmount * 1e9);
     const recipientPubkey = new PublicKey(recipientWallet);
+    const recipientTokenAccount = await getAssociatedTokenAddress(
+      TOKEN_MINT,
+      recipientPubkey
+    );
     
     // Get quote from Jupiter
-    logToBoth("📊 Getting Jupiter quote...", "info");
+    console.log("📊 Getting Jupiter quote...");
     const quoteResponse = await fetch(
       `https://quote-api.jup.ag/v6/quote?inputMint=So11111111111111111111111111111111111111112&outputMint=${TOKEN_MINT.toBase58()}&amount=${lamports}&slippageBps=100`
     );
@@ -326,17 +318,17 @@ async function buyOnJupiter(solAmount, recipientWallet) {
     }
     
     const outAmount = parseInt(quoteData.outAmount);
-    logToBoth(`💎 Quote: ${lamports.toLocaleString()} lamports → ${outAmount.toLocaleString()} SUNO`, "info");
+    console.log(`💎 Quote: ${lamports.toLocaleString()} lamports → ${outAmount.toLocaleString()} SUNO`);
     
     // Get swap transaction
-    logToBoth("🔨 Building swap transaction...", "info");
+    console.log("🔨 Building swap transaction...");
     const swapResponse = await fetch('https://quote-api.jup.ag/v6/swap', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         quoteResponse: quoteData,
         userPublicKey: TREASURY_KEYPAIR.publicKey.toBase58(),
-        destinationTokenAccount: recipientWallet,
+        destinationTokenAccount: recipientTokenAccount.toBase58(),
         wrapAndUnwrapSol: true,
         dynamicComputeUnitLimit: true,
         prioritizationFeeLamports: 50000,
@@ -349,7 +341,7 @@ async function buyOnJupiter(solAmount, recipientWallet) {
       throw new Error('No swap transaction returned');
     }
     
-    logToBoth("✍️ Signing and sending transaction...", "info");
+    console.log("✍️ Signing and sending transaction...");
     
     // Deserialize and sign
     const swapTransactionBuf = Buffer.from(swapData.swapTransaction, 'base64');
@@ -362,18 +354,20 @@ async function buyOnJupiter(solAmount, recipientWallet) {
       preflightCommitment: 'confirmed',
     });
     
-    logToBoth(`📤 Transaction sent: ${sig.substring(0, 8)}...`, "success");
-    logToBoth("⏳ Confirming transaction...", "info");
+    console.log(`📤 Transaction sent: ${sig.substring(0, 8)}...`);
+    console.log("⏳ Confirming transaction...");
     
     await connection.confirmTransaction(sig, 'confirmed');
     
-    logToBoth(`✅ Jupiter swap complete! Tx: ${sig}`, "success");
-    logToBoth(`🪙 Estimated ${outAmount.toLocaleString()} SUNO tokens sent to user`, "success");
+    console.log(`✅ Jupiter swap complete! Tx: ${sig}`);
+    console.log(`🔗 https://solscan.io/tx/${sig}`);
+    console.log(`🪙 Estimated ${outAmount.toLocaleString()} SUNO tokens sent to user`);
     
     return outAmount;
     
   } catch (err) {
-    logToBoth(`❌ Jupiter swap failed: ${err.message}`, "error");
+    console.error(`❌ Jupiter swap failed: ${err.message}`);
+    console.error(err.stack);
     throw err;
   }
 }
@@ -381,7 +375,9 @@ async function buyOnJupiter(solAmount, recipientWallet) {
 // === MARKET INTEGRATION (Auto-detect pump.fun or Jupiter) ===
 async function buySUNOOnMarket(solAmount, recipientWallet) {
   try {
-    logToBoth(`🔄 Market buy initiated: ${solAmount.toFixed(4)} SOL for ${recipientWallet.substring(0, 8)}...`, "info");
+    console.log(`\n🔄 ========== BUYING SUNO ==========`);
+    console.log(`💰 Amount: ${solAmount.toFixed(4)} SOL`);
+    console.log(`👛 Recipient: ${recipientWallet.substring(0, 8)}...`);
     
     const isBonded = await checkIfBonded();
     
@@ -394,11 +390,12 @@ async function buySUNOOnMarket(solAmount, recipientWallet) {
       sunoAmount = await buyOnPumpFun(solAmount, recipientWallet);
     }
     
-    logToBoth(`✅ Purchase complete! ${sunoAmount.toLocaleString()} SUNO → ${recipientWallet.substring(0, 8)}...`, "success");
+    console.log(`✅ Purchase complete! ${sunoAmount.toLocaleString()} SUNO → ${recipientWallet.substring(0, 8)}...`);
+    console.log(`🔄 ===================================\n`);
     return sunoAmount;
     
   } catch (err) {
-    logToBoth(`❌ Market buy failed: ${err.message}`, "error");
+    console.error(`❌ Market buy failed: ${err.message}`);
     console.error(err.stack);
     throw err;
   }
@@ -476,22 +473,36 @@ app.post(`/webhook/${token}`, (req, res) => {
 
 // === PAYMENT CONFIRMATION ===
 app.post("/confirm-payment", async (req, res) => {
+  console.log("\n==============================================");
+  console.log("🔔 /confirm-payment ENDPOINT HIT!");
+  console.log("📦 Request body:", JSON.stringify(req.body, null, 2));
+  console.log("==============================================\n");
+  
   try {
     const { signature, reference, userId, amount, senderWallet } = req.body;
     
+    console.log("🔍 Validating parameters...");
     if (!userId || !reference || !senderWallet) {
+      console.log("❌ MISSING PARAMETERS!");
       console.warn("⚠️ Missing params:", req.body);
       return res.status(400).json({ error: "Missing parameters" });
     }
+    console.log("✅ Parameters validated!");
 
     const userKey = String(userId);
     const amountNum = parseFloat(amount) || 0.01;
     
-    logToBoth(`✅ Payment received: ${amountNum} SOL from ${senderWallet.substring(0, 8)}...`, "success");
+    console.log(`\n💳 ========== PAYMENT RECEIVED ==========`);
+    console.log(`💰 Amount: ${amountNum} SOL`);
+    console.log(`👤 User: ${userKey}`);
+    console.log(`👛 Wallet: ${senderWallet.substring(0, 8)}...`);
+    console.log(`📝 Reference: ${reference.substring(0, 8)}...`);
+    console.log(`=====================================\n`);
 
     // Check for duplicates
     let existing = pendingPayments.find((p) => p.reference === reference);
     if (existing && existing.confirmed) {
+      console.log("⚠️ Payment already processed - returning success");
       return res.json({ ok: true, message: "Already processed" });
     }
 
@@ -506,6 +517,7 @@ app.post("/confirm-payment", async (req, res) => {
     }
 
     // === PAYMENT SPLIT ===
+    console.log("💰 Calculating payment split...");
     const transFee = amountNum * 0.10;
     const remaining = amountNum * 0.90;
     
@@ -521,27 +533,37 @@ app.post("/confirm-payment", async (req, res) => {
     const userAmount = remaining * retention;
     const treasuryAmount = remaining * (1 - retention);
     
-    logToBoth(`💰 Split: ${transFee.toFixed(4)} trans fee | ${userAmount.toFixed(4)} SUNO buy | ${treasuryAmount.toFixed(4)} treasury`, "info");
+    console.log(`\n💰 ========== PAYMENT SPLIT ==========`);
+    console.log(`🏦 Trans Fee (10%): ${transFee.toFixed(4)} SOL`);
+    console.log(`👤 User SUNO Buy (${(retention * 100).toFixed(0)}%): ${userAmount.toFixed(4)} SOL`);
+    console.log(`🏆 Competition Pool: ${treasuryAmount.toFixed(4)} SOL`);
+    console.log(`${tier.badge} Tier: ${tier.name} | ${multiplier}x multiplier`);
+    console.log(`=====================================\n`);
 
     // === SEND TRANS FEE ===
+    console.log("💸 Sending trans fee...");
     try {
       await sendSOLPayout(TRANS_FEE_WALLET.toBase58(), transFee, "Trans fee");
       transFeeCollected += transFee;
+      console.log("✅ Trans fee sent successfully");
     } catch (err) {
-      logToBoth(`❌ Trans fee failed: ${err.message}`, "error");
+      console.error(`❌ Trans fee failed: ${err.message}`);
     }
 
     // === BUY SUNO FOR USER ===
     let sunoAmount = 0;
+    console.log("\n🪙 Starting SUNO purchase...");
     try {
       sunoAmount = await buySUNOOnMarket(userAmount, senderWallet);
-      logToBoth(`✅ Bought ${sunoAmount.toLocaleString()} SUNO for user ${senderWallet.substring(0, 8)}...`, "success");
+      console.log(`\n✅ SUNO purchase SUCCESS: ${sunoAmount.toLocaleString()} tokens`);
     } catch (err) {
-      logToBoth(`❌ SUNO purchase failed: ${err.message}`, "error");
+      console.error(`\n❌ SUNO purchase FAILED: ${err.message}`);
+      console.error(err.stack);
     }
 
     // === ADD TO TREASURY ===
     treasurySOL += treasuryAmount;
+    console.log(`\n🏦 Treasury updated: +${treasuryAmount.toFixed(4)} SOL (Total: ${treasurySOL.toFixed(4)} SOL)`);
 
     // === SAVE USER DATA ===
     const userData = {
@@ -570,6 +592,7 @@ app.post("/confirm-payment", async (req, res) => {
       timeMessage = `\n⏰ Voting starts in ~${minutesLeft} minute${minutesLeft !== 1 ? 's' : ''}`;
     }
 
+    console.log("\n📱 Sending choice buttons to user...");
     try {
       await bot.sendMessage(
         userId,
@@ -585,14 +608,17 @@ app.post("/confirm-payment", async (req, res) => {
       );
       
       pendingPayments.find(p => p.reference === reference).userData = userData;
+      console.log("✅ Choice buttons sent successfully\n");
       
     } catch (e) {
       console.error("⚠️ DM error:", e.message);
     }
 
-    res.json({ ok: true });
+    console.log("✅ Payment processing complete - returning success to client\n");
+    res.json({ ok: true, sunoAmount });
   } catch (err) {
-    logToBoth(`💥 confirm-payment error: ${err.message}`, "error");
+    console.error(`\n💥 FATAL ERROR in confirm-payment: ${err.message}`);
+    console.error(err.stack);
     res.status(500).json({ error: "Internal error" });
   }
 });
@@ -615,9 +641,9 @@ async function sendSOLPayout(destination, amountSOL, reason = "payout") {
 
     const sig = await connection.sendTransaction(tx, [TREASURY_KEYPAIR]);
     await connection.confirmTransaction(sig, "confirmed");
-    logToBoth(`💸 ${reason}: ${amountSOL.toFixed(4)} SOL → ${destination.substring(0, 8)}...`, "success");
+    console.log(`💸 ${reason}: ${amountSOL.toFixed(4)} SOL → ${destination.substring(0, 8)}...`);
   } catch (err) {
-    logToBoth(`⚠️ ${reason} failed: ${err.message}`, "error");
+    console.error(`⚠️ ${reason} failed: ${err.message}`);
   }
 }
 
