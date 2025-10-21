@@ -11,11 +11,11 @@ import {
   Transaction,
   ComputeBudgetProgram,
   VersionedTransaction,
-  TransactionMessage,
 } from "@solana/web3.js";
 import {
   getAssociatedTokenAddress,
   createAssociatedTokenAccountInstruction,
+  createTransferInstruction,
   TOKEN_PROGRAM_ID,
   ASSOCIATED_TOKEN_PROGRAM_ID,
 } from "@solana/spl-token";
@@ -136,17 +136,117 @@ function getWhaleMultiplier(amount) {
   return 1.15 + ((amount - 0.50) / 4.50) * 0.35;
 }
 
+// === TRANSFER TOKENS TO RECIPIENT ===
+async function transferTokensToRecipient(tokenAmount, recipientWallet) {
+  try {
+    console.log(`📤 Initiating token transfer...`);
+    
+    const recipientPubkey = new PublicKey(recipientWallet);
+    
+    // Get treasury token account
+    const treasuryTokenAccount = await getAssociatedTokenAddress(
+      TOKEN_MINT,
+      TREASURY_KEYPAIR.publicKey
+    );
+    
+    // Get or create recipient token account
+    const recipientTokenAccount = await getAssociatedTokenAddress(
+      TOKEN_MINT,
+      recipientPubkey
+    );
+    
+    // Check if recipient ATA exists
+    const recipientATA = await connection.getAccountInfo(recipientTokenAccount);
+    
+    const tx = new Transaction();
+    
+    // Create recipient ATA if needed
+    if (!recipientATA) {
+      console.log("📝 Creating recipient token account...");
+      tx.add(
+        createAssociatedTokenAccountInstruction(
+          TREASURY_KEYPAIR.publicKey, // Payer
+          recipientTokenAccount,
+          recipientPubkey,
+          TOKEN_MINT
+        )
+      );
+    }
+    
+    // Add transfer instruction
+    tx.add(
+      createTransferInstruction(
+        treasuryTokenAccount,
+        recipientTokenAccount,
+        TREASURY_KEYPAIR.publicKey,
+        tokenAmount
+      )
+    );
+    
+    tx.feePayer = TREASURY_KEYPAIR.publicKey;
+    const { blockhash } = await connection.getLatestBlockhash();
+    tx.recentBlockhash = blockhash;
+    
+    console.log("✍️ Signing transfer transaction...");
+    const sig = await connection.sendTransaction(tx, [TREASURY_KEYPAIR]);
+    
+    console.log(`📤 Transfer sent: ${sig.substring(0, 8)}...`);
+    console.log(`🔗 https://solscan.io/tx/${sig}`);
+    
+    await connection.confirmTransaction(sig, "confirmed");
+    
+    console.log(`✅ Transfer confirmed!`);
+    
+    return true;
+    
+  } catch (err) {
+    console.error(`❌ Token transfer failed: ${err.message}`);
+    console.error(err.stack);
+    return false;
+  }
+}
+
 // === CHECK IF TOKEN HAS BONDED ===
 async function checkIfBonded() {
-  // ALWAYS USE JUPITER - pump.fun doesn't support buying for other wallets
-  console.log("🪐 Using Jupiter for all purchases (supports custom destination wallets)");
-  return true;
+  try {
+    console.log("🔍 Checking if SUNO has graduated from pump.fun...");
+    
+    // Derive bonding curve PDA
+    const [bondingCurve] = PublicKey.findProgramAddressSync(
+      [Buffer.from("bonding-curve"), TOKEN_MINT.toBuffer()],
+      PUMP_PROGRAM
+    );
+    
+    const accountInfo = await connection.getAccountInfo(bondingCurve);
+    
+    if (!accountInfo) {
+      console.log("✅ Token has graduated to Raydium! Using Jupiter...");
+      return true; // Bonded/graduated
+    }
+    
+    // Check if bonding curve is complete
+    const data = accountInfo.data;
+    const complete = data[8]; // Byte 8 indicates completion
+    
+    if (complete === 1) {
+      console.log("✅ Bonding curve complete! Token graduated. Using Jupiter...");
+      return true;
+    }
+    
+    console.log("📊 Token still on pump.fun bonding curve. Using pump.fun buy...");
+    return false;
+    
+  } catch (err) {
+    console.error(`⚠️ Bond check error: ${err.message}. Defaulting to Jupiter...`);
+    return true; // Default to Jupiter on error
+  }
 }
 
 // === PUMP.FUN BUY ===
 async function buyOnPumpFun(solAmount, recipientWallet) {
   try {
-    console.log(`🚀 Starting pump.fun buy: ${solAmount.toFixed(4)} SOL → ${recipientWallet.substring(0, 8)}...`);
+    console.log(`🚀 Starting pump.fun buy: ${solAmount.toFixed(4)} SOL`);
+    console.log(`📍 Will buy to treasury then transfer to: ${recipientWallet.substring(0, 8)}...`);
     
     const [bondingCurve] = PublicKey.findProgramAddressSync(
       [Buffer.from("bonding-curve"), TOKEN_MINT.toBuffer()],
@@ -162,32 +262,29 @@ async function buyOnPumpFun(solAmount, recipientWallet) {
       ASSOCIATED_TOKEN_PROGRAM_ID
     );
     
-    const recipientPubkey = new PublicKey(recipientWallet);
-    const recipientTokenAccount = await getAssociatedTokenAddress(
+    // Buy to TREASURY wallet first
+    const treasuryTokenAccount = await getAssociatedTokenAddress(
       TOKEN_MINT,
-      recipientPubkey
+      TREASURY_KEYPAIR.publicKey
     );
     
-    // Check if ATA exists
-    const ataInfo = await connection.getAccountInfo(recipientTokenAccount);
+    // Check if treasury ATA exists
+    const ataInfo = await connection.getAccountInfo(treasuryTokenAccount);
     const needsATA = !ataInfo;
     
     if (needsATA) {
-      console.log("📝 Creating associated token account...");
+      console.log("📝 Creating treasury token account...");
     }
     
-    // Calculate slippage (1% slippage)
-    const slippageBps = 100; // 1%
     const lamports = Math.floor(solAmount * 1e9);
-    
     console.log(`💰 Buy amount: ${lamports.toLocaleString()} lamports`);
     
     const tx = new Transaction();
     
     // Add compute budget
     tx.add(
-      ComputeBudgetProgram.setComputeUnitLimit({ units: 200_000 }),
-      ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 50_000 })
+      ComputeBudgetProgram.setComputeUnitLimit({ units: 250_000 }),
+      ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 100_000 })
     );
     
     // Create ATA if needed
@@ -195,21 +292,21 @@ async function buyOnPumpFun(solAmount, recipientWallet) {
       tx.add(
         createAssociatedTokenAccountInstruction(
           TREASURY_KEYPAIR.publicKey,
-          recipientTokenAccount,
-          recipientPubkey,
+          treasuryTokenAccount,
+          TREASURY_KEYPAIR.publicKey,
           TOKEN_MINT
         )
       );
     }
     
-    // Build buy instruction
+    // Build buy instruction - buying to TREASURY
     const keys = [
       { pubkey: PUMP_GLOBAL, isSigner: false, isWritable: false },
       { pubkey: PUMP_FEE, isSigner: false, isWritable: true },
       { pubkey: TOKEN_MINT, isSigner: false, isWritable: false },
       { pubkey: bondingCurve, isSigner: false, isWritable: true },
       { pubkey: associatedBondingCurve, isSigner: false, isWritable: true },
-      { pubkey: recipientTokenAccount, isSigner: false, isWritable: true },
+      { pubkey: treasuryTokenAccount, isSigner: false, isWritable: true }, // Treasury receives tokens
       { pubkey: TREASURY_KEYPAIR.publicKey, isSigner: true, isWritable: true },
       { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
       { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
@@ -218,12 +315,12 @@ async function buyOnPumpFun(solAmount, recipientWallet) {
       { pubkey: PUMP_PROGRAM, isSigner: false, isWritable: false },
     ];
     
-    // Buy instruction data: discriminator (8 bytes) + amount (8 bytes) + maxSolCost (8 bytes)
+    // Buy instruction data
     const BUY_DISCRIMINATOR = Buffer.from([0x66, 0x06, 0x3d, 0x12, 0x01, 0xda, 0xeb, 0xea]);
     const data = Buffer.concat([
       BUY_DISCRIMINATOR,
       Buffer.from(new Uint8Array(new BigUint64Array([BigInt(lamports)]).buffer)),
-      Buffer.from(new Uint8Array(new BigUint64Array([BigInt("18446744073709551615")]).buffer)) // Max u64 for maxSolCost
+      Buffer.from(new Uint8Array(new BigUint64Array([BigInt("18446744073709551615")]).buffer))
     ]);
     
     tx.add({
@@ -236,26 +333,39 @@ async function buyOnPumpFun(solAmount, recipientWallet) {
     const { blockhash } = await connection.getLatestBlockhash();
     tx.recentBlockhash = blockhash;
     
-    console.log("✍️ Signing transaction...");
+    console.log("✍️ Signing and sending pump.fun transaction...");
     const sig = await connection.sendTransaction(tx, [TREASURY_KEYPAIR], {
       skipPreflight: false,
       preflightCommitment: "confirmed",
     });
     
     console.log(`📤 Transaction sent: ${sig.substring(0, 8)}...`);
+    console.log(`🔗 https://solscan.io/tx/${sig}`);
     console.log("⏳ Confirming transaction...");
     
     await connection.confirmTransaction(sig, "confirmed");
     
-    console.log(`✅ Pump.fun buy complete! Tx: ${sig}`);
-    console.log(`🔗 https://solscan.io/tx/${sig}`);
+    console.log(`✅ Pump.fun buy complete!`);
     
-    // Get token balance
-    await new Promise(r => setTimeout(r, 2000)); // Wait for balance update
-    const balance = await connection.getTokenAccountBalance(recipientTokenAccount);
+    // Wait for balance update
+    await new Promise(r => setTimeout(r, 3000));
+    
+    // Get tokens bought
+    const balance = await connection.getTokenAccountBalance(treasuryTokenAccount);
     const tokenAmount = parseInt(balance.value.amount);
     
-    console.log(`🪙 Received ${tokenAmount.toLocaleString()} SUNO tokens`);
+    console.log(`🪙 Treasury received ${tokenAmount.toLocaleString()} SUNO tokens`);
+    
+    // NOW TRANSFER TO RECIPIENT
+    console.log(`\n📤 Transferring ${tokenAmount.toLocaleString()} SUNO to recipient...`);
+    const transferSuccess = await transferTokensToRecipient(tokenAmount, recipientWallet);
+    
+    if (!transferSuccess) {
+      console.error("❌ Transfer failed - tokens stuck in treasury!");
+      throw new Error("Failed to transfer tokens to recipient");
+    }
+    
+    console.log(`✅ Transfer complete! ${tokenAmount.toLocaleString()} SUNO → ${recipientWallet.substring(0, 8)}...`);
     
     return tokenAmount;
     
@@ -605,7 +715,7 @@ app.post("/confirm-payment", async (req, res) => {
     try {
       await bot.sendMessage(
         userId,
-        `✅ Purchase complete!\n\n🪙 ${sunoAmount.toLocaleString()} SUNO bought\n${tier.badge} ${tier.name} tier (${(retention * 100).toFixed(0)}% retention)\n💰 ${multiplier}x prize multiplier${timeMessage}\n\n🎯 What do you want to do?`,
+        `✅ Purchase complete!\n\n🪙 ${sunoAmount.toLocaleString()} SUNO bought & sent!\n${tier.badge} ${tier.name} tier (${(retention * 100).toFixed(0)}% retention)\n💰 ${multiplier}x prize multiplier${timeMessage}\n\n🎯 What do you want to do?`,
         {
           reply_markup: {
             inline_keyboard: [
