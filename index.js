@@ -550,7 +550,7 @@ bot.on("message", async (msg) => {
 
     await bot.sendMessage(
       userId,
-      `🎧 You already sent a track, but payment is pending!\n\n*Complete your entry:*\nPay ≥ 0.01 SOL via the link below.\n\n👉 [Pay with Solana](${redirectLink})\n\n⏰ Submission window closes in ~${minutesLeft} min`,
+      `🎧 You already sent a track, but payment is pending!\n\n*Complete your entry:*\nPay ≥ 0.01 SOL via the link below.\n\n👉 [Submit Your Masterpiece](${redirectLink})\n\n⏰ Submission window closes in ~${minutesLeft} min`,
       { parse_mode: "Markdown", disable_web_page_preview: true }
     );
 
@@ -583,7 +583,7 @@ bot.on("message", async (msg) => {
 
   await bot.sendMessage(
     userId,
-    `🎧 Got your track!\n\n*Before it's accepted:*\nPay ≥ 0.01 SOL via the link below. Your wallet will automatically be saved for prize payouts.\n\n👉 [Pay with Solana](${redirectLink})\n\n⏰ Submission window closes in ~${minutesLeft} min\n📍 Submit here: https://t.me/sunolabs`,
+    `🎧 Got your track!\n\n*Before it's accepted:*\nPay ≥ 0.01 SOL via the link below. Your wallet will automatically be saved for prize payouts.\n\n👉 [Submit Your Masterpiece](${redirectLink})\n\n⏰ Submission window closes in ~${minutesLeft} min`,
     { parse_mode: "Markdown", disable_web_page_preview: true }
   );
 
