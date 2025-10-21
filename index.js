@@ -247,11 +247,13 @@ async function buyOnPumpFun(solAmount, recipientWallet) {
       { pubkey: PUMP_PROGRAM, isSigner: false, isWritable: false },
     ];
     
-    // Buy instruction data: [102, 6, 190, 52, 184, 101, 70, 20] + amount + max_sol + slippage
-    const data = Buffer.alloc(24);
-    data.write("66063bbe34b84614", 0, "hex"); // Buy discriminator
-    data.writeBigUInt64LE(BigInt(lamports), 8);
-    data.writeBigUInt64LE(BigInt(slippageBps), 16);
+    // Buy instruction data: discriminator (8 bytes) + amount (8 bytes) + maxSolCost (8 bytes)
+    const BUY_DISCRIMINATOR = Buffer.from([0x66, 0x06, 0x3d, 0x12, 0x01, 0xda, 0xeb, 0xea]);
+    const data = Buffer.concat([
+      BUY_DISCRIMINATOR,
+      Buffer.from(new Uint8Array(new BigUint64Array([BigInt(lamports)]).buffer)),
+      Buffer.from(new Uint8Array(new BigUint64Array([BigInt("18446744073709551615")]).buffer)) // Max u64 for maxSolCost
+    ]);
     
     tx.add({
       keys,
@@ -559,6 +561,23 @@ app.post("/confirm-payment", async (req, res) => {
     } catch (err) {
       console.error(`\n❌ SUNO purchase FAILED: ${err.message}`);
       console.error(err.stack);
+    }
+
+    // === CHECK IF PURCHASE WAS SUCCESSFUL ===
+    if (sunoAmount === 0 || !sunoAmount) {
+      console.log("⚠️ SUNO purchase returned 0 tokens - notifying user of failure");
+      
+      try {
+        await bot.sendMessage(
+          userId,
+          `❌ Purchase Failed!\n\n⚠️ We received your ${amountNum} SOL payment, but the SUNO token purchase failed.\n\n🔄 Please contact support or try again.\n\nError: Token purchase returned 0 tokens.`
+        );
+      } catch (e) {
+        console.error("⚠️ Failed to send error message:", e.message);
+      }
+      
+      console.log("✅ Error notification sent - returning error to client\n");
+      return res.json({ ok: false, error: "SUNO purchase failed", sunoAmount: 0 });
     }
 
     // === ADD TO TREASURY ===
