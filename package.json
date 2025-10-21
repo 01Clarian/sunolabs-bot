@@ -10,12 +10,9 @@
     "express": "^4.19.2",
     "cors": "^2.8.5",
     "node-telegram-bot-api": "^0.64.0",
-    "node-cron": "^3.0.3",
-    "fs-extra": "^11.2.0",
     "@solana/web3.js": "^1.95.8",
     "@solana/spl-token": "^0.4.9",
-    "@solana/pay": "^0.2.4",
-    "bignumber.js": "^9.1.2"
+    "bs58": "^5.0.0"
   },
   "engines": {
     "node": ">=18.0.0"
