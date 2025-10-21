@@ -1,50 +1,4 @@
-// Build full winner message for voting channel
-  let fullMsg = `🏆 *Top Tracks of the Round* 🏆\n💰 Prize Pool: ${prizePool.toFixed(3)} SOL\n\n`;
-  for (let i = 0; i < numWinners; i++) {
-    const w = sorted[i];
-    const baseAmt = prizePool * weights[i];
-    const multiplier = w.multiplier || 1;
-    const finalAmt = baseAmt * multiplier;
-    
-    const badge = w.badge || "🎧";
-    const multText = multiplier > 1 ? ` (${multiplier}x bonus)` : "";
-    fullMsg += `#${i + 1} ${badge} ${w.user} — ${w.votes}🔥 — ${finalAmt.toFixed(3)} SOL${multText}\n`;
-    
-    // Send payouts
-    if (w.wallet && finalAmt > 0.000001) {
-      console.log(`💸 Sending ${finalAmt.toFixed(3)} SOL to ${w.user} (${w.wallet.substring(0, 8)}...) [${multiplier}x multiplier]`);
-      await sendPayout(w.wallet, finalAmt);
-      
-      // Send DM confirmation to winner
-      try {
-        const place = i + 1;
-        const ordinal = place === 1 ? "1st" : place === 2 ? "2nd" : place === 3 ? "3rd" : `${place}th`;
-        const bonusText = multiplier > 1 ? `\n🎁 Bonus: +${((multiplier - 1) * 100).toFixed(0)}% for ${w.tier} tier!` : "";
-        await bot.sendMessage(
-          w.userId,
-          `🎉 *Congratulations!*\n\nYou placed *${ordinal}* in the competition!\n\n🔥 Votes: ${w.votes}\n💰 Base Prize: ${baseAmt.toFixed(3)} SOL${bonusText}\n💵 Total Prize: ${finalAmt.toFixed(3)} SOL\n\n✅ Payment sent to:\n${w.wallet}\n\nCheck your wallet! 🎊`,
-          { parse_mode: "Markdown" }
-        );
-        console.log(`✅ Sent prize notification DM to ${w.user}`);
-      } catch (dmErr) {
-        console.error(`⚠️ Failed to send DM to ${w.user}:`, dmErr.message);
-      }
-    } else if (!w.wallet) {
-      console.warn(`⚠️ No wallet for ${w.user} — cannot send ${finalAmt.toFixed(3)} SOL`);
-      fullMsg += `   ⚠️ No wallet provided — prize forfeited\n`;
-      
-      // Notify user they missed out
-      try {
-        await bot.sendMessage(
-          w.userId,
-          `⚠️ You won ${finalAmt.toFixed(3)} SOL but we don't have your wallet address!\n\nNext time, make sure to pay via the Solana link so we can save your wallet for prizes.`,
-          { parse_mode: "Markdown" }
-        );
-      } catch (dmErr) {
-        console.error(`⚠️ Failed to send wallet warning DM to ${w.user}`);
-      }
-    }
-  }// === IMPORTS ===
+// === IMPORTS ===
 import TelegramBot from "node-telegram-bot-api";
 import fs from "fs";
 import express from "express";
@@ -64,8 +18,6 @@ if (!token) throw new Error("BOT_TOKEN not set");
 // Initialize bot WITHOUT polling - we'll use webhooks
 const bot = new TelegramBot(token, { polling: false });
 
-// No polling error handler needed with webhooks
-
 // === Graceful shutdown handlers ===
 let isShuttingDown = false;
 
@@ -77,7 +29,6 @@ async function gracefulShutdown(signal) {
   
   saveState();
   
-  // With webhooks, we don't need to stop polling
   console.log("✅ Shutdown complete");
   process.exit(0);
 }
@@ -112,10 +63,9 @@ const TREASURY_KEYPAIR = Keypair.fromSecretKey(TREASURY_PRIVATE_KEY);
 let potSOL = 0;
 let pendingPayments = [];
 let submissions = [];
-let phase = "submission"; // "submission", "voting", "cooldown"
+let phase = "submission";
 let cycleStartTime = null;
 let nextPhaseTime = null;
-let votingEndTimeout = null;
 
 // === STATE PERSISTENCE ===
 const SAVE_FILE = fs.existsSync("/data")
@@ -228,18 +178,18 @@ app.post("/confirm-payment", async (req, res) => {
       
       // Only the base 0.01 goes to prize pool split
       // Everything above 0.01 goes DIRECTLY to treasury
-      const basePrize = 0.01 * 0.5; // 0.005 to pool
-      const baseTreasury = 0.01 * 0.5; // 0.005 to treasury
-      const extraDonation = Math.max(0, amountNum - 0.01); // Everything extra
+      const basePrize = 0.01 * 0.5;
+      const baseTreasury = 0.01 * 0.5;
+      const extraDonation = Math.max(0, amountNum - 0.01);
       
       // Calculate multiplier based on amount paid (conservative bonuses)
       if (amountNum >= 0.10) {
-        sub.multiplier = 1.10; // 10% bonus
-        sub.badge = "👑"; // Patron
+        sub.multiplier = 1.10;
+        sub.badge = "👑";
         sub.tier = "Patron";
       } else if (amountNum >= 0.05) {
-        sub.multiplier = 1.05; // 5% bonus
-        sub.badge = "💎"; // Supporter  
+        sub.multiplier = 1.05;
+        sub.badge = "💎";
         sub.tier = "Supporter";
       } else {
         sub.multiplier = 1.0;
@@ -353,37 +303,34 @@ async function startNewCycle() {
   
   phase = "submission";
   cycleStartTime = Date.now();
-  nextPhaseTime = cycleStartTime + 5 * 60 * 1000; // 5 minutes from now
+  nextPhaseTime = cycleStartTime + 5 * 60 * 1000;
   saveState();
 
   const prizePool = potSOL * 0.5;
-
-  // Different announcements for each channel
   const botUsername = process.env.BOT_USERNAME || 'sunolabs_bot';
   
-  const mainChannelMsg = `🎬 *New Competition Cycle Started!*\n💰 Prize Pool: ${prizePool.toFixed(3)} SOL\n⏰ 5 minutes to submit your track!\n\n🎮 How to Play:\n• Send your audio track to the bot\n• Pay 0.01 SOL to enter\n• Your wallet auto-saved for prizes\n• Vote for your favorites\n• Winners get SOL prizes!\n\n🏆 Prize Split:\n• 1st Place: 35 percent\n• 2nd Place: 25 percent\n• 3rd Place: 20 percent\n• 4th Place: 10 percent\n• 5th Place: 10 percent\n\nStart here: @${botUsername}`;
+  const mainChannelMsg = `🎬 NEW COMPETITION CYCLE STARTED!\n💰 Prize Pool: ${prizePool.toFixed(3)} SOL\n⏰ 5 minutes to submit your track!\n\n🎮 How to Play:\n• Send your audio track to the bot\n• Pay 0.01 SOL to enter\n• Your wallet auto-saved for prizes\n• Vote for your favorites\n• Winners get SOL prizes!\n\n🏆 Prize Split:\n• 1st Place: 35 percent\n• 2nd Place: 25 percent\n• 3rd Place: 20 percent\n• 4th Place: 10 percent\n• 5th Place: 10 percent\n\nStart here: @${botUsername}`;
 
   const votingChannelMsg = `🎬 *New Round Started!*\n💰 Prize Pool: ${prizePool.toFixed(3)} SOL\n⏰ Submit your tracks in the next 5 minutes!\n\nSend your audio to the bot and pay 0.01 SOL to enter!`;
 
   try {
-    await bot.sendMessage(`@${MAIN_CHANNEL}`, mainChannelMsg, { disable_web_page_preview: true });
+    await bot.sendMessage(`@${MAIN_CHANNEL}`, mainChannelMsg);
     console.log("✅ Posted cycle start to main channel");
   } catch (err) {
     console.error("❌ Failed to announce in main channel:", err.message);
   }
 
   try {
-    await bot.sendMessage(`@${CHANNEL}`, votingChannelMsg, { parse_mode: "Markdown", disable_web_page_preview: true });
+    await bot.sendMessage(`@${CHANNEL}`, votingChannelMsg, { parse_mode: "Markdown" });
     console.log("✅ Posted cycle start to voting channel");
   } catch (err) {
     console.error("❌ Failed to announce in voting channel:", err.message);
   }
 
-  // Schedule voting to start in 5 minutes
   setTimeout(() => startVoting(), 5 * 60 * 1000);
 }
 
-// === POST SUBMISSIONS ===
+// === START VOTING ===
 async function startVoting() {
   console.log(`📋 Starting voting — Total: ${submissions.length}, Paid: ${submissions.filter(s => s.paid).length}`);
   
@@ -391,7 +338,6 @@ async function startVoting() {
   if (!paidSubs.length) {
     console.log("🚫 No paid submissions this round — restarting cycle in 1 minute");
     
-    // Announce in BOTH channels that round is restarting
     const noSubsMsg = "🚫 No submissions this round — new round starting in 1 minute!";
     try {
       await bot.sendMessage(`@${MAIN_CHANNEL}`, noSubsMsg);
@@ -407,12 +353,12 @@ async function startVoting() {
   console.log(`✅ Found ${paidSubs.length} paid submission(s), starting voting...`);
   
   phase = "voting";
-  nextPhaseTime = Date.now() + 5 * 60 * 1000; // 5 minutes of voting
+  nextPhaseTime = Date.now() + 5 * 60 * 1000;
   saveState();
 
   const prizePool = potSOL * 0.5;
   
-  // Announce voting in MAIN channel - NO MARKDOWN to avoid parsing errors
+  // Announce voting in MAIN channel - NO MARKDOWN
   try {
     const voteLink = `https://t.me/${CHANNEL}`;
     await bot.sendMessage(
@@ -422,7 +368,6 @@ async function startVoting() {
     console.log("✅ Posted voting announcement to main channel");
   } catch (err) {
     console.error("❌ Failed to announce voting in main channel:", err.message);
-    console.error("Error details:", err);
   }
 
   // Post submissions to voting channel
@@ -430,7 +375,7 @@ async function startVoting() {
     await bot.sendMessage(
       `@${CHANNEL}`,
       `🎬 *Voting Round Started!*\n💰 Prize Pool: ${prizePool.toFixed(3)} SOL\n⏰ *5 minutes to vote!*\n🏆 Winners announced after voting ends\n\n🔥 Vote for your favorites below!`,
-      { parse_mode: "Markdown", disable_web_page_preview: true }
+      { parse_mode: "Markdown" }
     );
     console.log("✅ Posted voting announcement to voting channel");
 
@@ -456,7 +401,6 @@ async function startVoting() {
     console.error("❌ Failed to post submissions:", err.message);
   }
 
-  // Schedule winner announcement in 5 minutes
   setTimeout(() => announceWinners(), 5 * 60 * 1000);
 }
 
@@ -470,7 +414,7 @@ async function announceWinners() {
   const paidSubs = submissions.filter((s) => s.paid);
   if (!paidSubs.length) {
     console.log("🚫 No submissions to announce");
-    setTimeout(() => startNewCycle(), 60 * 1000); // 1 min cooldown
+    setTimeout(() => startNewCycle(), 60 * 1000);
     return;
   }
 
@@ -483,23 +427,30 @@ async function announceWinners() {
   
   // Build full winner message for voting channel
   let fullMsg = `🏆 *Top Tracks of the Round* 🏆\n💰 Prize Pool: ${prizePool.toFixed(3)} SOL\n\n`;
+  
   for (let i = 0; i < numWinners; i++) {
     const w = sorted[i];
-    const amt = prizePool * weights[i];
-    fullMsg += `#${i + 1} ${w.user} — ${w.votes}🔥 — ${amt.toFixed(3)} SOL\n`;
+    const baseAmt = prizePool * weights[i];
+    const multiplier = w.multiplier || 1;
+    const finalAmt = baseAmt * multiplier;
+    
+    const badge = w.badge || "🎧";
+    const multText = multiplier > 1 ? ` (+${((multiplier - 1) * 100).toFixed(0)}% bonus)` : "";
+    fullMsg += `#${i + 1} ${badge} ${w.user} — ${w.votes}🔥 — ${finalAmt.toFixed(3)} SOL${multText}\n`;
     
     // Send payouts
-    if (w.wallet && amt > 0.000001) {
-      console.log(`💸 Sending ${amt.toFixed(3)} SOL to ${w.user} (${w.wallet.substring(0, 8)}...)`);
-      await sendPayout(w.wallet, amt);
+    if (w.wallet && finalAmt > 0.000001) {
+      console.log(`💸 Sending ${finalAmt.toFixed(3)} SOL to ${w.user} (${w.wallet.substring(0, 8)}...) [${multiplier}x multiplier]`);
+      await sendPayout(w.wallet, finalAmt);
       
       // Send DM confirmation to winner
       try {
         const place = i + 1;
         const ordinal = place === 1 ? "1st" : place === 2 ? "2nd" : place === 3 ? "3rd" : `${place}th`;
+        const bonusText = multiplier > 1 ? `\n🎁 Bonus: +${((multiplier - 1) * 100).toFixed(0)}% for ${w.tier} tier!` : "";
         await bot.sendMessage(
           w.userId,
-          `🎉 *Congratulations!*\n\nYou placed *${ordinal}* in the competition!\n\n🔥 Votes: ${w.votes}\n💰 Prize: ${amt.toFixed(3)} SOL\n\n✅ Payment sent to:\n${w.wallet}\n\nCheck your wallet! 🎊`,
+          `🎉 *Congratulations!*\n\nYou placed *${ordinal}* in the competition!\n\n🔥 Votes: ${w.votes}\n💰 Base Prize: ${baseAmt.toFixed(3)} SOL${bonusText}\n💵 Total Prize: ${finalAmt.toFixed(3)} SOL\n\n✅ Payment sent to:\n${w.wallet}\n\nCheck your wallet! 🎊`,
           { parse_mode: "Markdown" }
         );
         console.log(`✅ Sent prize notification DM to ${w.user}`);
@@ -507,15 +458,14 @@ async function announceWinners() {
         console.error(`⚠️ Failed to send DM to ${w.user}:`, dmErr.message);
       }
     } else if (!w.wallet) {
-      console.warn(`⚠️ No wallet for ${w.user} — cannot send ${amt.toFixed(3)} SOL`);
+      console.warn(`⚠️ No wallet for ${w.user} — cannot send ${finalAmt.toFixed(3)} SOL`);
       fullMsg += `   ⚠️ No wallet provided — prize forfeited\n`;
       
       // Notify user they missed out
       try {
         await bot.sendMessage(
           w.userId,
-          `⚠️ You won ${amt.toFixed(3)} SOL but we don't have your wallet address!\n\nNext time, make sure to pay via the Solana link so we can save your wallet for prizes.`,
-          { parse_mode: "Markdown" }
+          `⚠️ You won ${finalAmt.toFixed(3)} SOL but we don't have your wallet address!\n\nNext time, make sure to pay via the Solana link so we can save your wallet for prizes.`
         );
       } catch (dmErr) {
         console.error(`⚠️ Failed to send wallet warning DM to ${w.user}`);
@@ -543,7 +493,6 @@ async function announceWinners() {
     console.log("✅ Top winner announced in main channel");
   } catch (err) {
     console.error("❌ Failed to announce in main channel:", err.message);
-    console.error("Error details:", err);
   }
 
   // Reset state for next round
@@ -557,7 +506,6 @@ async function announceWinners() {
   console.log(`🏦 Retained ${treasuryShare.toFixed(3)} SOL in treasury`);
   console.log(`💸 Distributed ${prizePool.toFixed(3)} SOL to ${numWinners} winner(s)`);
   
-  // Wait 1 minute before starting new cycle
   setTimeout(() => startNewCycle(), 60 * 1000);
 }
 
@@ -591,7 +539,6 @@ bot.on("message", async (msg) => {
   });
   saveState();
 
-  // Calculate time remaining in submission window
   const now = Date.now();
   const timeRemaining = cycleStartTime ? Math.max(0, (cycleStartTime + 5 * 60 * 1000) - now) : 5 * 60 * 1000;
   const minutesLeft = Math.ceil(timeRemaining / 60000);
@@ -602,7 +549,6 @@ bot.on("message", async (msg) => {
     { parse_mode: "Markdown", disable_web_page_preview: true }
   );
 
-  // Store submission without wallet initially
   submissions.push({
     user,
     userId,
@@ -612,8 +558,8 @@ bot.on("message", async (msg) => {
     voters: [],
     paid: false,
     wallet: null,
-    amountPaid: 0, // Track how much they paid
-    multiplier: 1, // Default multiplier
+    amountPaid: 0,
+    multiplier: 1,
   });
   saveState();
 });
@@ -623,7 +569,7 @@ bot.on("callback_query", async (q) => {
   try {
     const [, userIdStr] = q.data.split("_");
     const userId = String(userIdStr);
-    const voter = String(q.from.id); // Use ID instead of username for uniqueness
+    const voter = String(q.from.id);
     const entry = submissions.find((s) => String(s.userId) === userId);
     
     if (!entry) {
@@ -640,7 +586,8 @@ bot.on("callback_query", async (q) => {
     entry.voters.push(voter);
     saveState();
 
-    const caption = `🎧 ${entry.user} — *${entry.title}*\n🔥 Votes: ${entry.votes}`;
+    const badge = entry.badge || "🎧";
+    const caption = `${badge} ${entry.user} — *${entry.title}*\n🔥 Votes: ${entry.votes}`;
     try {
       await bot.editMessageCaption(caption, {
         chat_id: q.message.chat.id,
@@ -669,7 +616,6 @@ bot.on("callback_query", async (q) => {
 app.listen(PORT, async () => {
   console.log(`🌐 SunoLabs Web Service running on port ${PORT}`);
   
-  // Load state after server is up
   loadState();
   
   // Set up webhook
@@ -677,18 +623,14 @@ app.listen(PORT, async () => {
   
   console.log("📡 Setting up webhook...");
   try {
-    // Always delete old webhook/polling first
     await bot.deleteWebHook();
     console.log("✅ Cleared any previous webhook");
     
-    // Small delay to ensure cleanup
     await new Promise(resolve => setTimeout(resolve, 1000));
     
-    // Set new webhook
     const result = await bot.setWebHook(webhookUrl);
     console.log("✅ Webhook set:", result);
     
-    // Verify webhook is working
     const info = await bot.getWebHookInfo();
     console.log("📊 Webhook info:");
     console.log(`  URL: ${info.url}`);
@@ -698,29 +640,24 @@ app.listen(PORT, async () => {
     }
   } catch (err) {
     console.error("❌ Failed to set webhook:", err.message);
-    console.error("💡 Bot may not receive messages until this is fixed");
   }
   
-  // Start first cycle immediately if not already in progress
   if (!cycleStartTime || phase === "cooldown") {
     console.log("🚀 Starting initial cycle...");
     setTimeout(() => startNewCycle(), 3000);
   } else {
     console.log(`⏳ Resuming ${phase} phase...`);
     
-    // Recovery: Recalculate timers based on saved state
     const now = Date.now();
     
     if (phase === "submission" && cycleStartTime) {
       const elapsed = now - cycleStartTime;
-      const submissionDuration = 5 * 60 * 1000; // 5 minutes
+      const submissionDuration = 5 * 60 * 1000;
       
       if (elapsed >= submissionDuration) {
-        // Submission time is over, start voting immediately
         console.log("⚠️ Submission phase overdue, starting voting now...");
         setTimeout(() => startVoting(), 1000);
       } else {
-        // Schedule voting for remaining time
         const timeLeft = submissionDuration - elapsed;
         console.log(`⏰ Submission phase has ${Math.ceil(timeLeft / 60000)} min remaining`);
         setTimeout(() => startVoting(), timeLeft);
@@ -729,11 +666,9 @@ app.listen(PORT, async () => {
       const timeLeft = nextPhaseTime - now;
       
       if (timeLeft <= 0) {
-        // Voting time is over, announce winners immediately
         console.log("⚠️ Voting phase overdue, announcing winners now...");
         setTimeout(() => announceWinners(), 1000);
       } else {
-        // Schedule winner announcement for remaining time
         console.log(`⏰ Voting phase has ${Math.ceil(timeLeft / 60000)} min remaining`);
         setTimeout(() => announceWinners(), timeLeft);
       }
