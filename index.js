@@ -546,7 +546,8 @@ bot.on("message", async (msg) => {
 
   await bot.sendMessage(
     userId,
-    `🎧 Got your track!\n\n*Before it's accepted:*\nPay ≥ 0.01 SOL via the link below. Your wallet will automatically be saved for prize payouts.\n\n👉 [Pay with Solana](${redirectLink})\n\n⏰ Submission window closes in ~${minutesLeft} min\n📍 Submit here: https://t.me/sunolabs`,
+    `🎧 Got your track!\n\n*Before it's accepted:*\nPay ≥ 0.01 SOL via the link below. Your wallet will automatically be saved for prize payouts.\n\n👉 [Submit your masterpiece](${redirectLink})\n\n⏰ Submission window closes in ~${minutesLeft} min\n📍
+  `,
     { parse_mode: "Markdown", disable_web_page_preview: true }
   );
 
