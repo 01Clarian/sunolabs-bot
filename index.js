@@ -15,17 +15,10 @@ import {
 const token = process.env.BOT_TOKEN;
 if (!token) throw new Error("BOT_TOKEN not set");
 
-// Initialize bot WITHOUT polling first
+// Initialize bot WITHOUT polling - we'll use webhooks
 const bot = new TelegramBot(token, { polling: false });
 
-// Global error handler for polling
-bot.on("polling_error", (error) => {
-  console.error("⚠️ Polling error:", error.message);
-  if (error.message.includes("409 Conflict")) {
-    console.error("❌ CRITICAL: Multiple bot instances detected!");
-    console.error("💡 Solution: Stop all other instances and redeploy");
-  }
-});
+// No polling error handler needed with webhooks
 
 // === Graceful shutdown handlers ===
 let isShuttingDown = false;
@@ -34,16 +27,12 @@ async function gracefulShutdown(signal) {
   if (isShuttingDown) return;
   isShuttingDown = true;
   
-  console.log(`🧹 Graceful shutdown (${signal}) — stopping polling...`);
-  
-  try {
-    await bot.stopPolling();
-    console.log("✅ Polling stopped cleanly");
-  } catch (err) {
-    console.error("⚠️ Error stopping polling:", err.message);
-  }
+  console.log(`🧹 Graceful shutdown (${signal})...`);
   
   saveState();
+  
+  // With webhooks, we don't need to stop polling
+  console.log("✅ Shutdown complete");
   process.exit(0);
 }
 
@@ -130,11 +119,18 @@ const PORT = process.env.PORT || 10000;
 app.get("/", (_, res) => {
   res.json({
     status: "✅ SunoLabs Bot Web Service is live!",
+    mode: "webhook",
     phase,
     submissions: submissions.length,
     potSOL: potSOL.toFixed(4),
     uptime: process.uptime(),
   });
+});
+
+// === WEBHOOK ENDPOINT ===
+app.post(`/webhook/${token}`, (req, res) => {
+  bot.processUpdate(req.body);
+  res.sendStatus(200);
 });
 
 // === PAYMENT CONFIRMATION ===
@@ -577,37 +573,33 @@ app.listen(PORT, async () => {
   // Load state after server is up
   loadState();
   
-  // CRITICAL: Stop any existing polling first, then wait before starting new polling
-  console.log("🧹 Cleaning up any existing bot instances...");
-  try {
-    await bot.stopPolling();
-    console.log("✅ Stopped any existing polling");
-  } catch (err) {
-    console.log("ℹ️ No existing polling to stop");
-  }
+  // Set up webhook
+  const webhookUrl = `https://sunolabs-bot.onrender.com/webhook/${token}`;
   
-  // Wait 3 seconds to ensure old instance releases Telegram connection
-  console.log("⏳ Waiting 3 seconds for cleanup...");
-  await new Promise(resolve => setTimeout(resolve, 3000));
-  
-  // NOW start polling
+  console.log("📡 Setting up webhook...");
   try {
-    await bot.startPolling();
-    console.log("✅ Telegram bot polling started successfully");
-  } catch (err) {
-    console.error("❌ Failed to start polling:", err.message);
+    // Always delete old webhook/polling first
+    await bot.deleteWebHook();
+    console.log("✅ Cleared any previous webhook");
     
-    // If it fails, wait 5 more seconds and retry once
-    console.log("🔄 Retrying in 5 seconds...");
-    await new Promise(resolve => setTimeout(resolve, 5000));
-    try {
-      await bot.startPolling();
-      console.log("✅ Telegram bot polling started on retry");
-    } catch (retryErr) {
-      console.error("❌ Retry failed:", retryErr.message);
-      console.error("💡 Manual fix: Suspend service, wait 10 seconds, then resume");
-      // Don't exit - keep web service running
+    // Small delay to ensure cleanup
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    
+    // Set new webhook
+    const result = await bot.setWebHook(webhookUrl);
+    console.log("✅ Webhook set:", result);
+    
+    // Verify webhook is working
+    const info = await bot.getWebHookInfo();
+    console.log("📊 Webhook info:");
+    console.log(`  URL: ${info.url}`);
+    console.log(`  Pending updates: ${info.pending_update_count}`);
+    if (info.last_error_message) {
+      console.warn(`  Last error: ${info.last_error_message}`);
     }
+  } catch (err) {
+    console.error("❌ Failed to set webhook:", err.message);
+    console.error("💡 Bot may not receive messages until this is fixed");
   }
   
   // Start first cycle immediately if not already in progress
@@ -658,4 +650,4 @@ setInterval(() => {
   );
 }, 30000);
 
-console.log("✅ SunoLabs Bot initialized with automatic cycles...");
+console.log("✅ SunoLabs Bot initialized with webhooks and automatic cycles...");
