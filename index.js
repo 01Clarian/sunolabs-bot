@@ -101,6 +101,25 @@ function calculateTreasuryBonus() {
   return Math.floor(actualTreasuryBalance * percentage);
 }
 
+// === GET ACTUAL TREASURY BALANCE FROM BLOCKCHAIN ===
+async function getActualTreasuryBalance() {
+  try {
+    const treasuryTokenAccount = await getAssociatedTokenAddress(
+      TOKEN_MINT,
+      TREASURY
+    );
+    
+    const balance = await connection.getTokenAccountBalance(treasuryTokenAccount);
+    const sunoBalance = Math.floor(parseFloat(balance.value.amount) / 1_000_000);
+    
+    console.log(`🏦 Treasury wallet balance: ${sunoBalance.toLocaleString()} SUNO`);
+    return sunoBalance;
+  } catch (err) {
+    console.log(`⚠️ Could not fetch treasury balance: ${err.message}`);
+    return actualTreasuryBalance; // Return current tracked value as fallback
+  }
+}
+
 // === CALCULATE VOTING TIME ===
 function calculateVotingTime() {
   const uploaders = participants.filter(p => p.choice === "upload" && p.track);
@@ -910,7 +929,7 @@ async function startNewCycle() {
     
     await bot.sendMessage(
       `@${MAIN_CHANNEL}`,
-      `🎬 NEW ROUND STARTED!\n\n💰 Prize Pool: ${treasurySUNO.toLocaleString()} SUNO\n🎰 Bonus Prize: +${treasuryBonus.toLocaleString()} SUNO available!\n✨ 1 in ${TREASURY_BONUS_CHANCE} chance to win it!\n⏰ 5 minutes to join!\n\n🎮 How to Play:\n1️⃣ Open ${botMention}\n2️⃣ Type /start\n3️⃣ Choose your path:\n   🎵 Upload track & compete for prizes\n   🗳️ Vote only & earn rewards\n4️⃣ Buy SUNO tokens (0.01 SOL minimum)\n5️⃣ Win SUNO prizes! 🏆\n\n🚀 Start now!`
+      `🎬 NEW ROUND STARTED!\n\n💰 Prize Pool: ${treasurySUNO.toLocaleString()} SUNO\n🎰 Bonus Prize: +${treasuryBonus.toLocaleString()} SUNO (1/500)\n⏰ 5 minutes to join!\n\n🎮 How to Play:\n1️⃣ Open ${botMention}\n2️⃣ Type /start\n3️⃣ Choose your path:\n   🎵 Upload track & compete for prizes\n   🗳️ Vote only & earn rewards\n4️⃣ Buy SUNO tokens (0.01 SOL minimum)\n5️⃣ Win SUNO prizes! 🏆\n\n🚀 Start now!`
     );
     console.log("✅ Posted cycle start to main channel");
   } catch (err) {
@@ -953,14 +972,14 @@ async function startVoting() {
   try {
     await bot.sendMessage(
       `@${MAIN_CHANNEL}`,
-      `🗳️ VOTING STARTED!\n\n🎵 ${uploaders.length} track${uploaders.length !== 1 ? 's' : ''} competing\n⏰ ${votingMinutes} minute${votingMinutes !== 1 ? 's' : ''} to vote!\n\n💰 Prize Pool: ${treasurySUNO.toLocaleString()} SUNO\n🎰 Bonus Prize: +${treasuryBonus.toLocaleString()} SUNO!\n✨ 1 in ${TREASURY_BONUS_CHANCE} chance for winner!\n\n🔥 Listen to tracks & vote for your favorite!\n📍 Vote here: https://t.me/${CHANNEL}\n\n🏆 Winners get 80% of prize pool\n💰 Voters who pick the winner share 20%!`
+      `🗳️ VOTING STARTED!\n\n🎵 ${uploaders.length} track${uploaders.length !== 1 ? 's' : ''} competing\n⏰ ${votingMinutes} minute${votingMinutes !== 1 ? 's' : ''} to vote!\n\n💰 Prize Pool: ${treasurySUNO.toLocaleString()} SUNO\n🎰 Bonus Prize: +${treasuryBonus.toLocaleString()} SUNO (1/500)\n\n🔥 Listen to tracks & vote for your favorite!\n📍 Vote here: https://t.me/${CHANNEL}\n\n🏆 Winners get 80% of prize pool\n💰 Voters who pick the winner share 20%!`
     );
   } catch {}
 
   try {
     await bot.sendMessage(
       `@${CHANNEL}`,
-      `🗳️ VOTING STARTED!\n\n💰 Prize Pool: ${treasurySUNO.toLocaleString()} SUNO\n🎰 Bonus Prize: +${treasuryBonus.toLocaleString()} SUNO!\n✨ 1 in ${TREASURY_BONUS_CHANCE} chance for winner!\n⏰ ${votingMinutes} minute${votingMinutes !== 1 ? 's' : ''} to vote!\n\n🎵 Listen to each track below\n🔥 Vote for your favorite!\n\n🏆 Top 5 tracks win prizes\n💎 Vote for the winner = earn rewards!`
+      `🗳️ VOTING STARTED!\n\n💰 Prize Pool: ${treasurySUNO.toLocaleString()} SUNO\n🎰 Bonus Prize: +${treasuryBonus.toLocaleString()} SUNO (1/500)\n⏰ ${votingMinutes} minute${votingMinutes !== 1 ? 's' : ''} to vote!\n\n🎵 Listen to each track below\n🔥 Vote for your favorite!\n\n🏆 Top 5 tracks win prizes\n💎 Vote for the winner = earn rewards!`
     );
 
     for (const p of uploaders) {
@@ -1070,7 +1089,7 @@ async function announceWinners() {
     resultsMsg += `✅ ${winnerVoters.length} voter(s) rewarded!`;
   }
 
-  resultsMsg += `\n\n🎰 Every round: 1 in ${TREASURY_BONUS_CHANCE} chance for bonus!`;
+  resultsMsg += `\n\n🎰 Bonus Prize every round (1/500 chance)`;
 
   try {
     await bot.sendMessage(`@${CHANNEL}`, resultsMsg);
@@ -1122,7 +1141,7 @@ bot.onText(/\/start|play/i, async (msg) => {
 
   await bot.sendMessage(
     userId,
-    `🎮 Welcome to SunoLabs Competition!\n\n💰 Prize Pool: ${treasurySUNO.toLocaleString()} SUNO\n🎰 Bonus Prize: +${treasuryBonus.toLocaleString()} SUNO available!\n✨ 1 in ${TREASURY_BONUS_CHANCE} chance to win it!${timeMessage}\n\n🎯 Choose your path:`,
+    `🎮 Welcome to SunoLabs Competition!\n\n💰 Prize Pool: ${treasurySUNO.toLocaleString()} SUNO\n🎰 Bonus Prize: +${treasuryBonus.toLocaleString()} SUNO (1/500)${timeMessage}\n\n🎯 Choose your path:`,
     {
       reply_markup: {
         inline_keyboard: [
@@ -1352,6 +1371,17 @@ app.listen(PORT, async () => {
   console.log(`🌐 SunoLabs Buy SUNO Bot on port ${PORT}`);
   
   loadState();
+  
+  // Initialize actual treasury balance from blockchain if not set
+  if (actualTreasuryBalance === 0) {
+    console.log(`🔍 Fetching actual treasury balance from blockchain...`);
+    actualTreasuryBalance = await getActualTreasuryBalance();
+    saveState();
+  }
+  
+  console.log(`💰 Current round pool: ${treasurySUNO.toLocaleString()} SUNO`);
+  console.log(`🏦 Actual treasury: ${actualTreasuryBalance.toLocaleString()} SUNO`);
+  console.log(`🎰 Bonus prize: ${calculateTreasuryBonus().toLocaleString()} SUNO (${(getTreasuryBonusPercentage() * 100).toFixed(0)}%)`);
   
   const webhookUrl = `https://sunolabs-bot.onrender.com/webhook/${token}`;
   try {
