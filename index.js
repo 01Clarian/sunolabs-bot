@@ -712,8 +712,14 @@ bot.on("message", async (msg) => {
 
   await bot.sendMessage(
     userId,
-    `🎧 Track received!\n\n👉 Buy SUNO Tokens & Enter:\n${redirectLink}\n\n🪙 Get tokens + compete!`,
-    { disable_web_page_preview: true }
+    `🎧 Track received!\n\n🪙 Get SUNO tokens + enter the competition!`,
+    {
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: "🪙 Get SUNO Tokens", url: redirectLink }]
+        ]
+      }
+    }
   );
 
   submissions.push({
