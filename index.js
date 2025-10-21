@@ -311,8 +311,7 @@ async function buyOnPumpFun(solAmount, recipientWallet) {
       { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
       { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
       { pubkey: new PublicKey("SysvarRent111111111111111111111111111111111"), isSigner: false, isWritable: false },
-      { pubkey: PUMP_EVENT_AUTHORITY, isSigner: false, isWritable: false },
-      { pubkey: PUMP_PROGRAM, isSigner: false, isWritable: false },
+      { pubkey: PUMP_EVENT_AUTHORITY, isSigner: false, isWritable: false }
     ];
     
     // Buy instruction data
