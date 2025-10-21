@@ -224,15 +224,25 @@ app.post("/confirm-payment", async (req, res) => {
       console.error("⚠️ DM error:", e.message);
     }
 
-    // Post tally update to main channel
+    // Post tally update to BOTH channels
     try {
       const paidCount = submissions.filter(s => s.paid).length;
-      await bot.sendMessage(
-        `@${MAIN_CHANNEL}`,
-        `💰 New entry! ${paidCount} track(s) entered\n💵 Prize pool: ${prizePool.toFixed(3)} SOL`
-      );
+      const tallyMsg = `💰 New entry! ${paidCount} track(s) entered\n💵 Prize pool: ${prizePool.toFixed(3)} SOL`;
+      
+      await bot.sendMessage(`@${MAIN_CHANNEL}`, tallyMsg);
+      console.log("✅ Posted tally to main channel");
     } catch (e) {
       console.error("⚠️ Main channel post error:", e.message);
+    }
+
+    try {
+      const paidCount = submissions.filter(s => s.paid).length;
+      const tallyMsg = `💰 New entry! ${paidCount} track(s) entered\n💵 Prize pool: ${prizePool.toFixed(3)} SOL`;
+      
+      await bot.sendMessage(`@${CHANNEL}`, tallyMsg);
+      console.log("✅ Posted tally to voting channel");
+    } catch (e) {
+      console.error("⚠️ Voting channel post error:", e.message);
     }
 
     res.json({ ok: true });
@@ -429,15 +439,21 @@ async function startNewCycle() {
 
   const prizePool = potSOL * 0.5;
 
-  // Announce in main channel
+  // Announce in BOTH channels
+  const announcement = `🎬 *New Round Started!*\n💰 Prize Pool: ${prizePool.toFixed(3)} SOL\n⏰ Submit your tracks in the next 5 minutes!\n\n📍 How to enter:\n1️⃣ Send your audio file to @${process.env.BOT_USERNAME || 'sunolabs_bot'}\n2️⃣ Pay 0.01 SOL to confirm\n3️⃣ Your wallet is automatically saved for prizes\n\n🔗 https://t.me/sunolabs`;
+
   try {
-    await bot.sendMessage(
-      `@${MAIN_CHANNEL}`,
-      `🎬 *New Round Started!*\n💰 Prize Pool: ${prizePool.toFixed(3)} SOL\n⏰ Submit your tracks in the next 5 minutes!\n\n📍 How to enter:\n1️⃣ Send your audio file to @${process.env.BOT_USERNAME || 'sunolabs_bot'}\n2️⃣ Pay 0.01 SOL to confirm\n3️⃣ Your wallet is automatically saved for prizes\n\n🔗 https://t.me/sunolabs`,
-      { parse_mode: "Markdown" }
-    );
+    await bot.sendMessage(`@${MAIN_CHANNEL}`, announcement, { parse_mode: "Markdown" });
+    console.log("✅ Posted cycle start to main channel");
   } catch (err) {
-    console.error("❌ Failed to announce new cycle:", err.message);
+    console.error("❌ Failed to announce in main channel:", err.message);
+  }
+
+  try {
+    await bot.sendMessage(`@${CHANNEL}`, announcement, { parse_mode: "Markdown" });
+    console.log("✅ Posted cycle start to voting channel");
+  } catch (err) {
+    console.error("❌ Failed to announce in voting channel:", err.message);
   }
 
   // Schedule voting to start in 5 minutes
@@ -451,6 +467,16 @@ async function startVoting() {
   const paidSubs = submissions.filter((s) => s.paid);
   if (!paidSubs.length) {
     console.log("🚫 No paid submissions this round — restarting cycle in 1 minute");
+    
+    // Announce in BOTH channels that round is restarting
+    const noSubsMsg = "🚫 No submissions this round — new round starting in 1 minute!";
+    try {
+      await bot.sendMessage(`@${MAIN_CHANNEL}`, noSubsMsg);
+      await bot.sendMessage(`@${CHANNEL}`, noSubsMsg);
+    } catch (err) {
+      console.error("❌ Failed to announce empty round:", err.message);
+    }
+    
     setTimeout(() => startNewCycle(), 60 * 1000);
     return;
   }
@@ -463,25 +489,26 @@ async function startVoting() {
 
   const prizePool = potSOL * 0.5;
   
-  // Announce voting in main channel
+  // Announce voting in MAIN channel - tell them to go vote in submissions channel
   try {
     await bot.sendMessage(
       `@${MAIN_CHANNEL}`,
-      `🗳️ *Voting is Now Live!*\n💰 Prize Pool: ${prizePool.toFixed(3)} SOL\n⏰ Vote for your favorite in the next 5 minutes!\n\n👉 Go vote: https://t.me/${CHANNEL}`,
+      `🗳️ *Voting is Now Live!*\n💰 Prize Pool: ${prizePool.toFixed(3)} SOL\n⏰ Vote for your favorite in the next 5 minutes!\n\n👉 Go vote now: https://t.me/${CHANNEL}`,
       { parse_mode: "Markdown" }
     );
+    console.log("✅ Posted voting announcement to main channel");
   } catch (err) {
-    console.error("❌ Failed to announce voting:", err.message);
+    console.error("❌ Failed to announce voting in main channel:", err.message);
   }
 
   // Post submissions to voting channel
   try {
     await bot.sendMessage(
       `@${CHANNEL}`,
-      `🎬 *Voting Round Started!*\n💰 Prize Pool: ${prizePool.toFixed(3)} SOL\n⏰ Voting ends in 5 minutes`,
+      `🎬 *Voting Round Started!*\n💰 Prize Pool: ${prizePool.toFixed(3)} SOL\n⏰ Voting ends in 5 minutes\n\n🔥 Vote for your favorites below!`,
       { parse_mode: "Markdown" }
     );
-    console.log("✅ Posted voting announcement");
+    console.log("✅ Posted voting announcement to voting channel");
 
     for (const s of paidSubs) {
       console.log(`🎵 Posting submission from ${s.user}...`);
@@ -579,16 +606,16 @@ async function announceWinners() {
     await bot.sendMessage(`@${CHANNEL}`, fullMsg, { parse_mode: "Markdown" });
     console.log("✅ Winners announced in voting channel");
   } catch (err) {
-    console.error("❌ Failed to announce winners:", err.message);
+    console.error("❌ Failed to announce winners in voting channel:", err.message);
   }
 
-  // Post top winner announcement to main channel
+  // Post top winner announcement to MAIN channel
   try {
     const winner = sorted[0];
     const winnerAmt = prizePool * weights[0];
     await bot.sendMessage(
       `@${MAIN_CHANNEL}`,
-      `🎉 *Congratulations!*\n🏆 Winner: ${winner.user}\n🔥 Votes: ${winner.votes}\n💰 Prize: ${winnerAmt.toFixed(3)} SOL\n\n📊 Total Prize Pool: ${prizePool.toFixed(3)} SOL\n\n✨ Check all winners & full results:\n👉 https://t.me/${CHANNEL}`,
+      `🎉 *Congratulations!*\n🏆 Winner: ${winner.user}\n🔥 Votes: ${winner.votes}\n💰 Prize: ${winnerAmt.toFixed(3)} SOL\n\n📊 Total Prize Pool: ${prizePool.toFixed(3)} SOL\n\n✨ Check all winners & full results:\n👉 https://t.me/${CHANNEL}\n\n⏰ New round starts in 1 minute!`,
       { parse_mode: "Markdown" }
     );
     console.log("✅ Top winner announced in main channel");
