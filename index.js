@@ -294,9 +294,11 @@ async function startNewCycle() {
   const prizePool = potSOL * 0.5;
 
   // Different announcements for each channel
-  const mainChannelMsg = `🎬 *New Competition Cycle Started!*\n💰 Prize Pool: ${prizePool.toFixed(3)} SOL\n⏰ *5 minutes to submit your track!*\n\n🎮 *How to Play:*\n1️⃣ Send your audio track to @${process.env.BOT_USERNAME || 'sunolabs_bot'}\n2️⃣ Pay 0.01 SOL to enter (your wallet auto-saved for prizes)\n3️⃣ Wait for voting round\n4️⃣ Vote for your favorites\n5️⃣ Winners get SOL prizes!\n\n🏆 *Prize Distribution:*\n• 1st Place: 35% of pool\n• 2nd Place: 25%\n• 3rd Place: 20%\n• 4th Place: 10%\n• 5th Place: 10%\n\n👉 Start here: @${process.env.BOT_USERNAME || 'sunolabs_bot'}`;
+  const botUsername = process.env.BOT_USERNAME || 'sunolabs_bot';
+  
+  const mainChannelMsg = `🎬 *New Competition Cycle Started!*\n💰 Prize Pool: ${prizePool.toFixed(3)} SOL\n⏰ *5 minutes to submit your track!*\n\n🎮 *How to Play:*\n1️⃣ Send your audio track to the bot\n2️⃣ Pay 0.01 SOL to enter (your wallet auto-saved for prizes)\n3️⃣ Wait for voting round\n4️⃣ Vote for your favorites\n5️⃣ Winners get SOL prizes!\n\n🏆 *Prize Distribution:*\n• 1st Place: 35% of pool\n• 2nd Place: 25%\n• 3rd Place: 20%\n• 4th Place: 10%\n• 5th Place: 10%\n\n👉 Start here: @${botUsername}`;
 
-  const votingChannelMsg = `🎬 *New Round Started!*\n💰 Prize Pool: ${prizePool.toFixed(3)} SOL\n⏰ Submit your tracks in the next 5 minutes!\n\n📍 Send your audio to @${process.env.BOT_USERNAME || 'sunolabs_bot'} and pay 0.01 SOL to enter!`;
+  const votingChannelMsg = `🎬 *New Round Started!*\n💰 Prize Pool: ${prizePool.toFixed(3)} SOL\n⏰ Submit your tracks in the next 5 minutes!\n\nSend your audio to the bot and pay 0.01 SOL to enter!`;
 
   try {
     await bot.sendMessage(`@${MAIN_CHANNEL}`, mainChannelMsg, { parse_mode: "Markdown", disable_web_page_preview: true });
