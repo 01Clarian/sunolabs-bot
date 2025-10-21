@@ -3,6 +3,7 @@ import TelegramBot from "node-telegram-bot-api";
 import fs from "fs";
 import express from "express";
 import cors from "cors";
+import rateLimit from "express-rate-limit";
 import {
   Connection,
   Keypair,
@@ -48,9 +49,10 @@ const CHANNEL = "sunolabs_submissions";
 const MAIN_CHANNEL = "sunolabs";
 
 // === SOLANA CONFIG ===
-const RPC_URL =
-  process.env.SOLANA_RPC_URL ||
-  "https://mainnet.helius-rpc.com/?api-key=f6691497-4961-41e1-9a08-53f30c65bf43";
+const RPC_URL = process.env.SOLANA_RPC_URL;
+if (!RPC_URL) {
+  throw new Error("❌ SOLANA_RPC_URL environment variable required!");
+}
 const connection = new Connection(RPC_URL, "confirmed");
 
 // === WALLET ADDRESSES ===
@@ -496,10 +498,27 @@ function loadState() {
 // === EXPRESS SERVER ===
 const app = express();
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '10kb' })); // Limit request size
 const PORT = process.env.PORT || 10000;
 
-app.get("/", async (_, res) => {
+// === RATE LIMITING ===
+const paymentLimiter = rateLimit({
+  windowMs: 1 * 60 * 1000, // 1 minute
+  max: 10, // 10 payment confirmations per minute per IP
+  message: { error: '⚠️ Too many payment attempts, please wait' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+const generalLimiter = rateLimit({
+  windowMs: 1 * 60 * 1000, // 1 minute
+  max: 100, // 100 requests per minute per IP
+  message: { error: '⚠️ Too many requests, please try again later' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+app.get("/", generalLimiter, async (_, res) => {
   const uploaders = participants.filter(p => p.choice === "upload" && p.paid).length;
   const voteOnly = voters.length;
   
@@ -515,13 +534,13 @@ app.get("/", async (_, res) => {
   });
 });
 
-app.post(`/webhook/${token}`, (req, res) => {
+app.post(`/webhook/${token}`, generalLimiter, (req, res) => {
   bot.processUpdate(req.body);
   res.sendStatus(200);
 });
 
 // === PAYMENT CONFIRMATION ===
-app.post("/confirm-payment", async (req, res) => {
+app.post("/confirm-payment", paymentLimiter, async (req, res) => {
   console.log("\n==============================================");
   console.log("🔔 /confirm-payment ENDPOINT HIT!");
   console.log("📦 Request body:", JSON.stringify(req.body, null, 2));
@@ -530,16 +549,32 @@ app.post("/confirm-payment", async (req, res) => {
   try {
     const { signature, reference, userId, amount, senderWallet } = req.body;
     
+    // === VALIDATION ===
     console.log("🔍 Validating parameters...");
     if (!userId || !reference || !senderWallet) {
       console.log("❌ MISSING PARAMETERS!");
       console.warn("⚠️ Missing params:", req.body);
-      return res.status(400).json({ error: "Missing parameters" });
+      return res.status(400).json({ error: "Missing required fields" });
     }
+    
+    // Validate amount is reasonable
+    const amountNum = parseFloat(amount);
+    if (isNaN(amountNum) || amountNum < 0.001 || amountNum > 100) {
+      console.log("❌ INVALID AMOUNT:", amount);
+      return res.status(400).json({ error: "Invalid amount (must be 0.001-100 SOL)" });
+    }
+    
+    // Validate wallet address
+    try {
+      new PublicKey(senderWallet);
+    } catch (e) {
+      console.log("❌ INVALID WALLET:", senderWallet);
+      return res.status(400).json({ error: "Invalid wallet address" });
+    }
+    
     console.log("✅ Parameters validated!");
 
     const userKey = String(userId);
-    const amountNum = parseFloat(amount) || 0.01;
     
     console.log(`\n💳 ========== PAYMENT RECEIVED ==========`);
     console.log(`💰 Amount: ${amountNum} SOL`);
