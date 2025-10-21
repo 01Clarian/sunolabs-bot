@@ -19,10 +19,6 @@ import {
   TOKEN_PROGRAM_ID,
 } from "@solana/spl-token";
 import bs58 from "bs58";
-import zlib from "zlib";
-import { promisify } from "util";
-
-const gunzip = promisify(zlib.gunzip);
 
 // === TELEGRAM CONFIG ===
 const token = process.env.BOT_TOKEN;
@@ -247,13 +243,12 @@ async function buyOnPumpFun(solAmount, recipientWallet) {
     console.log(`🚀 Starting pump.fun buy with PumpPortal API: ${solAmount.toFixed(4)} SOL`);
     console.log(`📍 Buying directly to: ${recipientWallet.substring(0, 8)}...`);
     
-    // Get quote first
-    console.log("📊 Getting PumpPortal quote...");
+    // Get transaction from PumpPortal
+    console.log("📊 Getting PumpPortal transaction...");
     const quoteResponse = await fetch(`https://pumpportal.fun/api/trade-local`, {
       method: "POST",
       headers: { 
-        "Content-Type": "application/json",
-        "Accept-Encoding": "gzip, deflate"
+        "Content-Type": "application/json"
       },
       body: JSON.stringify({
         publicKey: TREASURY_KEYPAIR.publicKey.toBase58(),
@@ -269,47 +264,16 @@ async function buyOnPumpFun(solAmount, recipientWallet) {
     
     if (!quoteResponse.ok) {
       const errorText = await quoteResponse.text();
-      throw new Error(`PumpPortal quote failed: ${quoteResponse.status} - ${errorText}`);
+      throw new Error(`PumpPortal request failed: ${quoteResponse.status} - ${errorText}`);
     }
     
-    // Get response as ArrayBuffer to handle compression
-    const responseBuffer = await quoteResponse.arrayBuffer();
-    console.log(`✅ Got response (${responseBuffer.byteLength} bytes)`);
-    
-    // Check if it's gzipped (starts with 0x1f 0x8b)
-    const uint8View = new Uint8Array(responseBuffer);
-    let txBase64;
-    
-    if (uint8View[0] === 0x1f && uint8View[1] === 0x8b) {
-      console.log("🗜️ Response is gzipped, decompressing...");
-      const decompressed = await gunzip(Buffer.from(responseBuffer));
-      txBase64 = decompressed.toString('utf8');
-      console.log(`✅ Decompressed to ${txBase64.length} chars`);
-    } else {
-      // Not compressed, convert to string
-      txBase64 = Buffer.from(responseBuffer).toString('utf8');
-      console.log(`✅ Got ${txBase64.length} chars (uncompressed)`);
-    }
-    
-    console.log(`📝 First 100 chars: ${txBase64.substring(0, 100)}...`);
-    
-    // Check if it's an error message (JSON) instead of base64
-    if (txBase64.startsWith('{') || txBase64.startsWith('[')) {
-      const errorData = JSON.parse(txBase64);
-      console.error(`❌ PumpPortal returned error:`, errorData);
-      throw new Error(`PumpPortal error: ${JSON.stringify(errorData)}`);
-    }
-    
-    // Check if response looks like valid base64
-    if (!/^[A-Za-z0-9+/=\s]+$/.test(txBase64.trim())) {
-      console.error(`❌ Response doesn't look like base64:`, txBase64.substring(0, 200));
-      throw new Error(`Invalid response format from PumpPortal`);
-    }
+    // PumpPortal returns raw binary transaction data (not base64!)
+    const txData = await quoteResponse.arrayBuffer();
+    console.log(`✅ Got transaction data (${txData.byteLength} bytes)`);
     
     // Deserialize and sign transaction
     console.log("🔓 Deserializing transaction...");
-    const txBuf = Buffer.from(txBase64.trim(), 'base64');
-    const tx = VersionedTransaction.deserialize(txBuf);
+    const tx = VersionedTransaction.deserialize(new Uint8Array(txData));
     tx.sign([TREASURY_KEYPAIR]);
     
     // Send transaction
