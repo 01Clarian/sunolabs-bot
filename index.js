@@ -37,10 +37,7 @@ const RPC_URL =
 const connection = new Connection(RPC_URL, "confirmed");
 
 // === TREASURY CONFIG ===
-// Public treasury address (for UI / on-chain tracking)
 const TREASURY = new PublicKey("98tf4zU5WhLmsCt1D4HQH5Ej9C5aFwCz8KQwykmKvDDQ");
-
-// Private key for automated payouts
 const TREASURY_PRIVATE_KEY = process.env.BOT_PRIVATE_KEY
   ? Uint8Array.from(JSON.parse(process.env.BOT_PRIVATE_KEY))
   : null;
@@ -56,17 +53,25 @@ let phase = "submissions";
 let nextRoundTime = null;
 
 // === STATE PERSISTENCE ===
-const SAVE_FILE = "./submissions.json";
+const SAVE_FILE = fs.existsSync("/data")
+  ? "/data/submissions.json"
+  : "./submissions.json";
+
 function saveState() {
   try {
     fs.writeFileSync(
       SAVE_FILE,
-      JSON.stringify({ submissions, phase, nextRoundTime, potSOL, pendingPayments }, null, 2)
+      JSON.stringify(
+        { submissions, phase, nextRoundTime, potSOL, pendingPayments },
+        null,
+        2
+      )
     );
   } catch (err) {
     console.error("⚠️ Failed to save state:", err.message);
   }
 }
+
 function loadState() {
   if (!fs.existsSync(SAVE_FILE)) return;
   try {
@@ -76,6 +81,9 @@ function loadState() {
     nextRoundTime = d.nextRoundTime || null;
     potSOL = d.potSOL || 0;
     pendingPayments = d.pendingPayments || [];
+    console.log(
+      `📂 State restored — ${submissions.length} submissions, pot: ${potSOL} SOL`
+    );
   } catch (e) {
     console.error("⚠️ Failed to load:", e.message);
   }
@@ -100,7 +108,8 @@ app.post("/confirm-payment", async (req, res) => {
       return res.status(400).json({ error: "Missing parameters" });
     }
 
-    console.log("✅ Received payment confirmation:", { reference, amount, userId });
+    const userKey = String(userId);
+    console.log("✅ Received payment confirmation:", { reference, amount, userKey });
 
     // ✅ Find existing pending payment
     let existing = pendingPayments.find((p) => p.reference === reference);
@@ -115,31 +124,48 @@ app.post("/confirm-payment", async (req, res) => {
       existing.confirmed = true;
       console.log("♻️ Marked existing reference as confirmed:", reference);
     } else {
-      pendingPayments.push({ userId, username: userId, reference, confirmed: true });
+      pendingPayments.push({
+        userId: userKey,
+        username: userKey,
+        reference,
+        confirmed: true,
+      });
       console.log("🆕 Added new confirmed payment:", reference);
     }
 
-    // ✅ Update totals and submission
+    // ✅ Update totals
     potSOL += parseFloat(amount) || 0.01;
 
-    const sub = submissions.find((s) => s.userId === userId);
-    if (sub) sub.paid = true;
+    // ✅ Find and mark submission as paid
+    const sub = submissions.find((s) => String(s.userId) === userKey);
+    if (sub) {
+      sub.paid = true;
+      console.log(`💾 Marked submission ${userKey} as paid.`);
+    } else {
+      console.warn(`⚠️ No matching submission found for user ${userKey}.`);
+    }
+
     saveState();
 
     const displayPot = potSOL * 0.5;
 
-    // ✅ Try sending DM to user
+    // ✅ Send DM confirmation
     try {
-      await bot.sendMessage(userId, "✅ Payment confirmed — your track is officially entered!");
+      await bot.sendMessage(
+        userId,
+        "✅ Payment confirmed — your track is officially entered!"
+      );
     } catch (e) {
       console.error("⚠️ DM error:", e.message);
     }
 
-    // ✅ Always send channel update
+    // ✅ Channel update
     try {
       await bot.sendMessage(
         `@${CHANNEL}`,
-        `💰 ${userId} added ${amount} SOL to the pot (${displayPot.toFixed(2)} SOL prize pool)`
+        `💰 ${userId} added ${amount} SOL to the pot (${displayPot.toFixed(
+          2
+        )} SOL prize pool)`
       );
     } catch (e) {
       console.error("⚠️ Channel post error:", e.message);
@@ -152,7 +178,6 @@ app.post("/confirm-payment", async (req, res) => {
   }
 });
 
-
 app.listen(PORT, () =>
   console.log(`🌐 SunoLabs Web Service running on port ${PORT}`)
 );
@@ -164,14 +189,14 @@ bot.on("message", async (msg) => {
   const user = msg.from.username
     ? `@${msg.from.username}`
     : msg.from.first_name || "Unknown";
-  const userId = msg.from.id;
+  const userId = String(msg.from.id);
 
   if (phase === "voting") {
     await bot.sendMessage(userId, "⚠️ Voting is live — submissions closed.");
     return;
   }
 
-  if (submissions.find((s) => s.userId === userId)) {
+  if (submissions.find((s) => String(s.userId) === userId)) {
     await bot.sendMessage(userId, "⚠️ You already submitted this round!");
     return;
   }
@@ -201,7 +226,7 @@ bot.on("message", async (msg) => {
     votes: 0,
     voters: [],
     paid: false,
-    wallet: TREASURY.toBase58(), // optional artist wallet later
+    wallet: TREASURY.toBase58(),
   });
   saveState();
 });
@@ -209,9 +234,9 @@ bot.on("message", async (msg) => {
 // === VOTING ===
 bot.on("callback_query", async (q) => {
   const [, userIdStr] = q.data.split("_");
-  const userId = Number(userIdStr);
+  const userId = String(userIdStr);
   const voter = q.from.username || q.from.first_name;
-  const entry = submissions.find((s) => s.userId === userId);
+  const entry = submissions.find((s) => String(s.userId) === userId);
   if (!entry) return;
 
   if (entry.voters.includes(voter))
@@ -228,7 +253,9 @@ bot.on("callback_query", async (q) => {
       message_id: q.message.message_id,
       parse_mode: "Markdown",
       reply_markup: {
-        inline_keyboard: [[{ text: "🔥 Vote", callback_data: `vote_${entry.userId}` }]],
+        inline_keyboard: [
+          [{ text: "🔥 Vote", callback_data: `vote_${entry.userId}` }],
+        ],
       },
     });
   } catch (err) {
@@ -262,7 +289,9 @@ async function postSubmissions() {
       caption: `🎧 ${s.user} — *${s.title}*\n🔥 Votes: 0`,
       parse_mode: "Markdown",
       reply_markup: {
-        inline_keyboard: [[{ text: "🔥 Vote", callback_data: `vote_${s.userId}` }]],
+        inline_keyboard: [
+          [{ text: "🔥 Vote", callback_data: `vote_${s.userId}` }],
+        ],
       },
     });
     await new Promise((r) => setTimeout(r, 1200));
@@ -285,7 +314,9 @@ async function sendPayout(destination, amountSOL) {
 
     const sig = await connection.sendTransaction(tx, [TREASURY_KEYPAIR]);
     await connection.confirmTransaction(sig, "confirmed");
-    console.log(`💸 Sent ${amountSOL.toFixed(3)} SOL → ${destination} (tx: ${sig})`);
+    console.log(
+      `💸 Sent ${amountSOL.toFixed(3)} SOL → ${destination} (tx: ${sig})`
+    );
   } catch (err) {
     console.error("⚠️ Payout failed:", err.message);
   }
