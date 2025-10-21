@@ -207,17 +207,6 @@ function calculateVotingTime() {
   }
 }
 
-// === CHECK FOR TREASURY BONUS WIN ===
-function checkTreasuryBonus() {
-  const roll = Math.floor(Math.random() * TREASURY_BONUS_CHANCE) + 1;
-  return roll === 1; // 1 in 10,000 chance
-}
-
-// === CALCULATE POTENTIAL TREASURY BONUS ===
-function calculateTreasuryBonus() {
-  return Math.floor(treasurySUNO * TREASURY_BONUS_PERCENTAGE);
-}
-
 // === TRANSFER TOKENS TO RECIPIENT ===
 async function transferTokensToRecipient(tokenAmount, recipientWallet) {
   try {
