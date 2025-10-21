@@ -11,24 +11,52 @@ import {
   SystemProgram,
   Transaction,
 } from "@solana/web3.js";
-import BigNumber from "bignumber.js";
 
 // === TELEGRAM CONFIG ===
 const token = process.env.BOT_TOKEN;
 if (!token) throw new Error("BOT_TOKEN not set");
-const bot = new TelegramBot(token, { polling: true });
 
-// === Prevent multiple polling instances on Render restarts ===
-process.once("SIGTERM", () => {
-  console.log("🧹 Graceful shutdown (SIGTERM) — stopping polling");
-  bot.stopPolling();
-});
-process.once("SIGINT", () => {
-  console.log("🧹 Graceful shutdown (SIGINT) — stopping polling");
-  bot.stopPolling();
+// Initialize bot WITHOUT polling first
+const bot = new TelegramBot(token, { polling: false });
+
+// Global error handler for polling
+bot.on("polling_error", (error) => {
+  console.error("⚠️ Polling error:", error.message);
+  if (error.message.includes("409 Conflict")) {
+    console.error("❌ CRITICAL: Multiple bot instances detected!");
+    console.error("💡 Solution: Stop all other instances and redeploy");
+  }
 });
 
-const CHANNEL = "sunolabs_submissions"; // ensure bot is admin in channel
+// === Graceful shutdown handlers ===
+let isShuttingDown = false;
+
+async function gracefulShutdown(signal) {
+  if (isShuttingDown) return;
+  isShuttingDown = true;
+  
+  console.log(`🧹 Graceful shutdown (${signal}) — stopping polling...`);
+  
+  try {
+    await bot.stopPolling();
+    console.log("✅ Polling stopped cleanly");
+  } catch (err) {
+    console.error("⚠️ Error stopping polling:", err.message);
+  }
+  
+  saveState();
+  process.exit(0);
+}
+
+process.once("SIGTERM", () => gracefulShutdown("SIGTERM"));
+process.once("SIGINT", () => gracefulShutdown("SIGINT"));
+
+// Prevent unhandled rejections from crashing
+process.on("unhandledRejection", (reason, promise) => {
+  console.error("⚠️ Unhandled Rejection at:", promise, "reason:", reason);
+});
+
+const CHANNEL = "sunolabs_submissions";
 
 // === SOLANA CONFIG ===
 const RPC_URL =
@@ -47,10 +75,11 @@ const TREASURY_KEYPAIR = Keypair.fromSecretKey(TREASURY_PRIVATE_KEY);
 
 // === STATE ===
 let potSOL = 0;
-let pendingPayments = []; // { userId, username, reference, confirmed }
+let pendingPayments = [];
 let submissions = [];
 let phase = "submissions";
 let nextRoundTime = null;
+let votingEndTimeout = null; // Track the timeout
 
 // === STATE PERSISTENCE ===
 const SAVE_FILE = fs.existsSync("/data")
@@ -82,13 +111,21 @@ function loadState() {
     potSOL = d.potSOL || 0;
     pendingPayments = d.pendingPayments || [];
     console.log(
-      `📂 State restored — ${submissions.length} submissions, pot: ${potSOL} SOL`
+      `📂 State restored — ${submissions.length} submissions, pot: ${potSOL} SOL, phase: ${phase}`
     );
+    
+    // If we crashed during voting, handle recovery
+    if (phase === "voting" && nextRoundTime) {
+      const elapsed = (Date.now() - nextRoundTime) / 1000;
+      if (elapsed >= 270) { // 4.5 minutes
+        console.log("⚠️ Detected incomplete voting round on restart, announcing winners...");
+        setTimeout(() => announceWinners(), 5000); // Give bot time to start
+      }
+    }
   } catch (e) {
     console.error("⚠️ Failed to load:", e.message);
   }
 }
-loadState();
 
 // === EXPRESS SERVER ===
 const app = express();
@@ -97,7 +134,15 @@ app.use(express.json());
 const PORT = process.env.PORT || 10000;
 
 // === ROOT HEALTH ===
-app.get("/", (_, res) => res.send("✅ SunoLabs Bot Web Service is live!"));
+app.get("/", (_, res) => {
+  res.json({
+    status: "✅ SunoLabs Bot Web Service is live!",
+    phase,
+    submissions: submissions.length,
+    potSOL: potSOL.toFixed(4),
+    uptime: process.uptime(),
+  });
+});
 
 // === PAYMENT CONFIRMATION ===
 app.post("/confirm-payment", async (req, res) => {
@@ -109,7 +154,14 @@ app.post("/confirm-payment", async (req, res) => {
     }
 
     const userKey = String(userId);
-    console.log("✅ Received payment confirmation:", { reference, amount, userKey });
+    const amountNum = parseFloat(amount) || 0.01;
+    
+    console.log("✅ Received payment confirmation:", { 
+      reference, 
+      amount: amountNum, 
+      userKey,
+      signature: signature?.substring(0, 8) + "..."
+    });
 
     let existing = pendingPayments.find((p) => p.reference === reference);
 
@@ -131,7 +183,7 @@ app.post("/confirm-payment", async (req, res) => {
       console.log("🆕 Added new confirmed payment:", reference);
     }
 
-    potSOL += parseFloat(amount) || 0.01;
+    potSOL += amountNum;
 
     const sub = submissions.find((s) => String(s.userId) === userKey);
     if (sub) {
@@ -143,23 +195,30 @@ app.post("/confirm-payment", async (req, res) => {
 
     saveState();
 
-    const displayPot = potSOL * 0.5;
+    const prizePool = potSOL * 0.5;
 
+    // Calculate time until next announcement (next 5-min mark + 4.5 min voting)
+    const now = new Date();
+    const nextCycle = new Date(now);
+    nextCycle.setMinutes(Math.ceil(now.getMinutes() / 5) * 5, 0, 0);
+    const votingEnd = new Date(nextCycle.getTime() + 4.5 * 60 * 1000);
+    const minutesUntilWinner = Math.ceil((votingEnd - now) / 60000);
+
+    // Send DM confirmation with timer
     try {
       await bot.sendMessage(
         userId,
-        "✅ Payment confirmed — your track is officially entered!"
+        `✅ Payment confirmed — your track is officially entered!\n\n⏰ Winner announced in ~${minutesUntilWinner} minutes\n💰 Current prize pool: ${prizePool.toFixed(2)} SOL`
       );
     } catch (e) {
       console.error("⚠️ DM error:", e.message);
     }
 
+    // Post to channel - only show prize pool (50%)
     try {
       await bot.sendMessage(
         `@${CHANNEL}`,
-        `💰 ${userId} added ${amount} SOL to the pot (${displayPot.toFixed(
-          2
-        )} SOL prize pool)`
+        `💰 New entry! Prize pool now: ${prizePool.toFixed(2)} SOL`
       );
     } catch (e) {
       console.error("⚠️ Channel post error:", e.message);
@@ -172,9 +231,22 @@ app.post("/confirm-payment", async (req, res) => {
   }
 });
 
-app.listen(PORT, () =>
-  console.log(`🌐 SunoLabs Web Service running on port ${PORT}`)
-);
+// Start server first, then bot
+app.listen(PORT, async () => {
+  console.log(`🌐 SunoLabs Web Service running on port ${PORT}`);
+  
+  // Load state after server is up
+  loadState();
+  
+  // NOW start polling
+  try {
+    await bot.startPolling();
+    console.log("✅ Telegram bot polling started successfully");
+  } catch (err) {
+    console.error("❌ Failed to start polling:", err.message);
+    process.exit(1);
+  }
+});
 
 // === TELEGRAM BOT HANDLERS ===
 bot.on("message", async (msg) => {
@@ -208,10 +280,11 @@ bot.on("message", async (msg) => {
 
   await bot.sendMessage(
     userId,
-    `🎧 Got your track!\n\nBefore it's accepted, please confirm entry with ≥ *0.01 SOL*.\n👉 [Tap here to pay with Solana Pay](${redirectLink})`,
+    `🎧 Got your track!\n\n*Before it's accepted:*\n1️⃣ Send ≥ 0.01 SOL via the link below\n2️⃣ In the payment, include your Solana wallet address where you want winnings sent\n\n👉 [Pay with Solana](${redirectLink})\n\n💡 *Important:* We need your wallet address to send prizes if you win!`,
     { parse_mode: "Markdown", disable_web_page_preview: true }
   );
 
+  // Store submission without wallet initially - will be updated when payment comes through
   submissions.push({
     user,
     userId,
@@ -220,42 +293,56 @@ bot.on("message", async (msg) => {
     votes: 0,
     voters: [],
     paid: false,
-    wallet: TREASURY.toBase58(),
+    wallet: null, // Will be filled when payment is confirmed
   });
   saveState();
 });
 
 // === VOTING ===
 bot.on("callback_query", async (q) => {
-  const [, userIdStr] = q.data.split("_");
-  const userId = String(userIdStr);
-  const voter = q.from.username || q.from.first_name;
-  const entry = submissions.find((s) => String(s.userId) === userId);
-  if (!entry) return;
-
-  if (entry.voters.includes(voter))
-    return bot.answerCallbackQuery(q.id, { text: "⚠️ Already voted." });
-
-  entry.votes++;
-  entry.voters.push(voter);
-  saveState();
-
-  const caption = `🎧 ${entry.user} — *${entry.title}*\n🔥 Votes: ${entry.votes}`;
   try {
-    await bot.editMessageCaption(caption, {
-      chat_id: q.message.chat.id,
-      message_id: q.message.message_id,
-      parse_mode: "Markdown",
-      reply_markup: {
-        inline_keyboard: [
-          [{ text: "🔥 Vote", callback_data: `vote_${entry.userId}` }],
-        ],
-      },
-    });
+    const [, userIdStr] = q.data.split("_");
+    const userId = String(userIdStr);
+    const voter = String(q.from.id); // Use ID instead of username for uniqueness
+    const entry = submissions.find((s) => String(s.userId) === userId);
+    
+    if (!entry) {
+      await bot.answerCallbackQuery(q.id, { text: "⚠️ Entry not found" });
+      return;
+    }
+
+    if (entry.voters.includes(voter)) {
+      await bot.answerCallbackQuery(q.id, { text: "⚠️ Already voted." });
+      return;
+    }
+
+    entry.votes++;
+    entry.voters.push(voter);
+    saveState();
+
+    const caption = `🎧 ${entry.user} — *${entry.title}*\n🔥 Votes: ${entry.votes}`;
+    try {
+      await bot.editMessageCaption(caption, {
+        chat_id: q.message.chat.id,
+        message_id: q.message.message_id,
+        parse_mode: "Markdown",
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: "🔥 Vote", callback_data: `vote_${entry.userId}` }],
+          ],
+        },
+      });
+    } catch (err) {
+      console.error("⚠️ Edit caption failed:", err.message);
+    }
+    
+    await bot.answerCallbackQuery(q.id, { text: "✅ Vote recorded!" });
   } catch (err) {
-    console.error("⚠️ Edit caption failed:", err.message);
+    console.error("⚠️ Callback query error:", err.message);
+    try {
+      await bot.answerCallbackQuery(q.id, { text: "❌ Error processing vote" });
+    } catch {}
   }
-  bot.answerCallbackQuery(q.id, { text: "✅ Vote recorded!" });
 });
 
 // === POST SUBMISSIONS ===
@@ -267,42 +354,56 @@ async function postSubmissions() {
   }
 
   phase = "voting";
+  nextRoundTime = Date.now();
   saveState();
 
-  const prizePool = potSOL * 0.5;
-  await bot.sendMessage(
-    `@${CHANNEL}`,
-    `🎬 *Voting Round Started!*\n💰 Prize Pool: ${prizePool.toFixed(
-      2
-    )} SOL\n50 % → Winners • 50 % → Treasury`,
-    { parse_mode: "Markdown" }
-  );
+  const prizePool = potSOL * 0.5; // Only show 50% as prize pool
+  
+  try {
+    await bot.sendMessage(
+      `@${CHANNEL}`,
+      `🎬 *Voting Round Started!*\n💰 Prize Pool: ${prizePool.toFixed(
+        2
+      )} SOL\n⏰ Voting ends in ~4.5 minutes`,
+      { parse_mode: "Markdown" }
+    );
 
-  for (const s of paidSubs) {
-    await bot.sendAudio(`@${CHANNEL}`, s.track, {
-      caption: `🎧 ${s.user} — *${s.title}*\n🔥 Votes: 0`,
-      parse_mode: "Markdown",
-      reply_markup: {
-        inline_keyboard: [
-          [{ text: "🔥 Vote", callback_data: `vote_${s.userId}` }],
-        ],
-      },
-    });
-    await new Promise((r) => setTimeout(r, 1200));
+    for (const s of paidSubs) {
+      await bot.sendAudio(`@${CHANNEL}`, s.track, {
+        caption: `🎧 ${s.user} — *${s.title}*\n🔥 Votes: 0`,
+        parse_mode: "Markdown",
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: "🔥 Vote", callback_data: `vote_${s.userId}` }],
+          ],
+        },
+      });
+      await new Promise((r) => setTimeout(r, 1200));
+    }
+
+    console.log("✅ Posted all paid submissions.");
+    return true;
+  } catch (err) {
+    console.error("❌ Failed to post submissions:", err.message);
+    return false;
   }
-
-  console.log("✅ Posted all paid submissions.");
-  return true;
 }
 
 // === PAYOUT FUNCTION ===
 async function sendPayout(destination, amountSOL) {
   try {
+    const lamports = Math.floor(amountSOL * 1e9);
+    
+    if (lamports <= 0) {
+      console.warn(`⚠️ Skipping payout to ${destination} — amount too small`);
+      return;
+    }
+    
     const tx = new Transaction().add(
       SystemProgram.transfer({
         fromPubkey: TREASURY_KEYPAIR.publicKey,
         toPubkey: new PublicKey(destination),
-        lamports: Math.floor(amountSOL * 1e9),
+        lamports,
       })
     );
     tx.feePayer = TREASURY_KEYPAIR.publicKey;
@@ -314,7 +415,7 @@ async function sendPayout(destination, amountSOL) {
       `💸 Sent ${amountSOL.toFixed(3)} SOL → ${destination} (tx: ${sig})`
     );
   } catch (err) {
-    console.error("⚠️ Payout failed:", err.message);
+    console.error(`⚠️ Payout failed for ${destination}:`, err.message);
   }
 }
 
@@ -322,49 +423,69 @@ async function sendPayout(destination, amountSOL) {
 async function announceWinners() {
   const paidSubs = submissions.filter((s) => s.paid);
   if (!paidSubs.length) {
+    console.log("🚫 No submissions to announce");
     phase = "submissions";
+    nextRoundTime = null;
     saveState();
     return;
   }
 
   const sorted = [...paidSubs].sort((a, b) => b.votes - a.votes);
-  const prizePool = potSOL * 0.5;
-  const treasuryShare = potSOL * 0.5;
+  const prizePool = potSOL * 0.5; // This is what winners split
+  const treasuryShare = potSOL * 0.5; // This stays in treasury
 
   const weights = [0.35, 0.25, 0.2, 0.1, 0.1];
-  let msg = `🏆 *Top Tracks of the Round* 🏆\n💰 Total Pot: ${potSOL.toFixed(
-    2
-  )} SOL\n🏦 Treasury Retained: ${treasuryShare.toFixed(2)} SOL\n\n`;
+  
+  // Build winner message - only show prize pool (not full pot)
+  let msg = `🏆 *Top Tracks of the Round* 🏆\n💰 Prize Pool: ${prizePool.toFixed(2)} SOL\n\n`;
 
-  for (let i = 0; i < Math.min(5, sorted.length); i++) {
+  const numWinners = Math.min(5, sorted.length);
+  
+  for (let i = 0; i < numWinners; i++) {
     const w = sorted[i];
     const amt = prizePool * weights[i];
-    msg += `#${i + 1} ${w.user} — ${w.votes}🔥 — ${amt.toFixed(2)} SOL\n`;
-    await sendPayout(w.wallet, amt);
+    msg += `#${i + 1} ${w.user} — ${w.votes}🔥 — ${amt.toFixed(3)} SOL\n`;
+    
+    // Actually send the payout
+    if (amt > 0.000001) { // Only if meaningful amount
+      await sendPayout(w.wallet, amt);
+    }
   }
 
-  await bot.sendMessage(`@${CHANNEL}`, msg, { parse_mode: "Markdown" });
+  try {
+    await bot.sendMessage(`@${CHANNEL}`, msg, { parse_mode: "Markdown" });
+    console.log("✅ Winners announced successfully");
+  } catch (err) {
+    console.error("❌ Failed to announce winners:", err.message);
+  }
 
+  // Reset state for next round
   submissions = [];
   potSOL = 0;
   pendingPayments = [];
   phase = "submissions";
+  nextRoundTime = null;
   saveState();
-  console.log(`🏦 Retained ${treasuryShare.toFixed(2)} SOL in treasury`);
+  
+  console.log(`🏦 Retained ${treasuryShare.toFixed(3)} SOL in treasury`);
+  console.log(`💸 Distributed ${prizePool.toFixed(3)} SOL to ${numWinners} winner(s)`);
 }
 
 // === 5-MINUTE CYCLE (POST + RESULTS) ===
-if (!process.env.CRON_STARTED) {
-  process.env.CRON_STARTED = true;
-  cron.schedule("*/5 * * * *", async () => {
-    console.log("🎬 5-minute cycle — Posting submissions now…");
-    const posted = await postSubmissions();
+cron.schedule("*/5 * * * *", async () => {
+  console.log("🎬 5-minute cycle triggered —", new Date().toISOString());
+  
+  // Clear any existing timeout
+  if (votingEndTimeout) {
+    clearTimeout(votingEndTimeout);
+    votingEndTimeout = null;
+  }
+  
+  const posted = await postSubmissions();
 
-    // record when voting started
-    if (posted) nextRoundTime = Date.now();
-
-    // wait ~4.5 minutes before announcing, to ensure voting phase actually ran
-    setTimeout(async () => {
+  if (posted) {
+    // Schedule winner announcement after 4.5 minutes
+    votingEndTimeout = setTimeout(async () => {
       const elapsed = nextRoundTime ? (Date.now() - nextRoundTime) / 1000 : 0;
       if (phase !== "voting" || elapsed < 240) {
         console.log("⏳ Skipping premature announce — voting still active.");
@@ -373,12 +494,15 @@ if (!process.env.CRON_STARTED) {
       console.log("🕒 Voting closed — Announcing winners…");
       await announceWinners();
     }, 4.5 * 60 * 1000);
-  });
-}
+  }
+});
 
 // === HEARTBEAT ===
 setInterval(() => {
-  console.log("⏰ Bot heartbeat — still alive ", new Date().toISOString());
-}, 15000);
+  const memUsage = process.memoryUsage();
+  console.log(
+    `⏰ Bot heartbeat — ${new Date().toISOString()} | Phase: ${phase} | Mem: ${(memUsage.heapUsed / 1024 / 1024).toFixed(2)}MB`
+  );
+}, 30000); // Every 30 seconds instead of 15
 
-console.log("✅ SunoLabs Bot running with 5-minute cycles and auto payouts…");
+console.log("✅ SunoLabs Bot initialized with 5-minute cycles and auto payouts…");
