@@ -1,4 +1,50 @@
-// === IMPORTS ===
+// Build full winner message for voting channel
+  let fullMsg = `🏆 *Top Tracks of the Round* 🏆\n💰 Prize Pool: ${prizePool.toFixed(3)} SOL\n\n`;
+  for (let i = 0; i < numWinners; i++) {
+    const w = sorted[i];
+    const baseAmt = prizePool * weights[i];
+    const multiplier = w.multiplier || 1;
+    const finalAmt = baseAmt * multiplier;
+    
+    const badge = w.badge || "🎧";
+    const multText = multiplier > 1 ? ` (${multiplier}x bonus)` : "";
+    fullMsg += `#${i + 1} ${badge} ${w.user} — ${w.votes}🔥 — ${finalAmt.toFixed(3)} SOL${multText}\n`;
+    
+    // Send payouts
+    if (w.wallet && finalAmt > 0.000001) {
+      console.log(`💸 Sending ${finalAmt.toFixed(3)} SOL to ${w.user} (${w.wallet.substring(0, 8)}...) [${multiplier}x multiplier]`);
+      await sendPayout(w.wallet, finalAmt);
+      
+      // Send DM confirmation to winner
+      try {
+        const place = i + 1;
+        const ordinal = place === 1 ? "1st" : place === 2 ? "2nd" : place === 3 ? "3rd" : `${place}th`;
+        const bonusText = multiplier > 1 ? `\n🎁 Bonus: +${((multiplier - 1) * 100).toFixed(0)}% for ${w.tier} tier!` : "";
+        await bot.sendMessage(
+          w.userId,
+          `🎉 *Congratulations!*\n\nYou placed *${ordinal}* in the competition!\n\n🔥 Votes: ${w.votes}\n💰 Base Prize: ${baseAmt.toFixed(3)} SOL${bonusText}\n💵 Total Prize: ${finalAmt.toFixed(3)} SOL\n\n✅ Payment sent to:\n${w.wallet}\n\nCheck your wallet! 🎊`,
+          { parse_mode: "Markdown" }
+        );
+        console.log(`✅ Sent prize notification DM to ${w.user}`);
+      } catch (dmErr) {
+        console.error(`⚠️ Failed to send DM to ${w.user}:`, dmErr.message);
+      }
+    } else if (!w.wallet) {
+      console.warn(`⚠️ No wallet for ${w.user} — cannot send ${finalAmt.toFixed(3)} SOL`);
+      fullMsg += `   ⚠️ No wallet provided — prize forfeited\n`;
+      
+      // Notify user they missed out
+      try {
+        await bot.sendMessage(
+          w.userId,
+          `⚠️ You won ${finalAmt.toFixed(3)} SOL but we don't have your wallet address!\n\nNext time, make sure to pay via the Solana link so we can save your wallet for prizes.`,
+          { parse_mode: "Markdown" }
+        );
+      } catch (dmErr) {
+        console.error(`⚠️ Failed to send wallet warning DM to ${w.user}`);
+      }
+    }
+  }// === IMPORTS ===
 import TelegramBot from "node-telegram-bot-api";
 import fs from "fs";
 import express from "express";
@@ -178,10 +224,33 @@ app.post("/confirm-payment", async (req, res) => {
     const sub = submissions.find((s) => String(s.userId) === userKey);
     if (sub) {
       sub.paid = true;
+      sub.amountPaid = amountNum;
+      
+      // Only the base 0.01 goes to prize pool split
+      // Everything above 0.01 goes DIRECTLY to treasury
+      const basePrize = 0.01 * 0.5; // 0.005 to pool
+      const baseTreasury = 0.01 * 0.5; // 0.005 to treasury
+      const extraDonation = Math.max(0, amountNum - 0.01); // Everything extra
+      
+      // Calculate multiplier based on amount paid (conservative bonuses)
+      if (amountNum >= 0.10) {
+        sub.multiplier = 1.10; // 10% bonus
+        sub.badge = "👑"; // Patron
+        sub.tier = "Patron";
+      } else if (amountNum >= 0.05) {
+        sub.multiplier = 1.05; // 5% bonus
+        sub.badge = "💎"; // Supporter  
+        sub.tier = "Supporter";
+      } else {
+        sub.multiplier = 1.0;
+        sub.badge = "";
+        sub.tier = "Basic";
+      }
+      
       // Store the sender's wallet address for payouts
       if (senderWallet) {
         sub.wallet = senderWallet;
-        console.log(`💳 Stored wallet ${senderWallet.substring(0, 8)}... for user ${userKey}`);
+        console.log(`💳 ${sub.tier} entry: ${amountNum} SOL (${basePrize} to pool, ${baseTreasury + extraDonation} to treasury) - ${sub.multiplier}x multiplier`);
       } else {
         console.warn(`⚠️ No wallet address provided by user ${userKey}`);
       }
@@ -343,18 +412,17 @@ async function startVoting() {
 
   const prizePool = potSOL * 0.5;
   
-  // Announce voting in MAIN channel - tell them to go vote in submissions channel
+  // Announce voting in MAIN channel - NO MARKDOWN to avoid parsing errors
   try {
     const voteLink = `https://t.me/${CHANNEL}`;
     await bot.sendMessage(
       `@${MAIN_CHANNEL}`,
-      `🗳️ *Voting is Now Live!*\n💰 Prize Pool: ${prizePool.toFixed(3)} SOL\n⏰ *5 minutes to vote!*\n🏆 Winners announced after voting ends\n\nGo vote now:\n${voteLink}`,
-      { parse_mode: "Markdown", disable_web_page_preview: true }
+      `🗳️ VOTING IS NOW LIVE!\n💰 Prize Pool: ${prizePool.toFixed(3)} SOL\n⏰ 5 minutes to vote!\n🏆 Winners announced after voting ends\n\nGo vote now:\n${voteLink}`
     );
     console.log("✅ Posted voting announcement to main channel");
   } catch (err) {
-    console.error("❌ Failed to announce voting in main channel:", err);
-    console.error("Error details:", JSON.stringify(err, null, 2));
+    console.error("❌ Failed to announce voting in main channel:", err.message);
+    console.error("Error details:", err);
   }
 
   // Post submissions to voting channel
@@ -368,8 +436,11 @@ async function startVoting() {
 
     for (const s of paidSubs) {
       console.log(`🎵 Posting submission from ${s.user}...`);
+      const badge = s.badge || "";
+      const caption = badge ? `${badge} ${s.user} — *${s.title}*\n🔥 Votes: 0` : `🎧 ${s.user} — *${s.title}*\n🔥 Votes: 0`;
+      
       await bot.sendAudio(`@${CHANNEL}`, s.track, {
-        caption: `🎧 ${s.user} — *${s.title}*\n🔥 Votes: 0`,
+        caption,
         parse_mode: "Markdown",
         reply_markup: {
           inline_keyboard: [
@@ -421,9 +492,34 @@ async function announceWinners() {
     if (w.wallet && amt > 0.000001) {
       console.log(`💸 Sending ${amt.toFixed(3)} SOL to ${w.user} (${w.wallet.substring(0, 8)}...)`);
       await sendPayout(w.wallet, amt);
+      
+      // Send DM confirmation to winner
+      try {
+        const place = i + 1;
+        const ordinal = place === 1 ? "1st" : place === 2 ? "2nd" : place === 3 ? "3rd" : `${place}th`;
+        await bot.sendMessage(
+          w.userId,
+          `🎉 *Congratulations!*\n\nYou placed *${ordinal}* in the competition!\n\n🔥 Votes: ${w.votes}\n💰 Prize: ${amt.toFixed(3)} SOL\n\n✅ Payment sent to:\n${w.wallet}\n\nCheck your wallet! 🎊`,
+          { parse_mode: "Markdown" }
+        );
+        console.log(`✅ Sent prize notification DM to ${w.user}`);
+      } catch (dmErr) {
+        console.error(`⚠️ Failed to send DM to ${w.user}:`, dmErr.message);
+      }
     } else if (!w.wallet) {
       console.warn(`⚠️ No wallet for ${w.user} — cannot send ${amt.toFixed(3)} SOL`);
       fullMsg += `   ⚠️ No wallet provided — prize forfeited\n`;
+      
+      // Notify user they missed out
+      try {
+        await bot.sendMessage(
+          w.userId,
+          `⚠️ You won ${amt.toFixed(3)} SOL but we don't have your wallet address!\n\nNext time, make sure to pay via the Solana link so we can save your wallet for prizes.`,
+          { parse_mode: "Markdown" }
+        );
+      } catch (dmErr) {
+        console.error(`⚠️ Failed to send wallet warning DM to ${w.user}`);
+      }
     }
   }
 
@@ -435,18 +531,19 @@ async function announceWinners() {
     console.error("❌ Failed to announce winners in voting channel:", err.message);
   }
 
-  // Post top winner announcement to MAIN channel
+  // Post top winner announcement to MAIN channel - NO MARKDOWN
   try {
     const winner = sorted[0];
-    const winnerAmt = prizePool * weights[0];
+    const winnerAmt = prizePool * weights[0] * (winner.multiplier || 1);
     const resultsLink = `https://t.me/${CHANNEL}`;
-    const winnerMsg = `🎉 *Congratulations!*\n🏆 Winner: ${winner.user}\n🔥 Votes: ${winner.votes}\n💰 Prize: ${winnerAmt.toFixed(3)} SOL\n\n📊 Total Prize Pool: ${prizePool.toFixed(3)} SOL\n\nCheck all winners and full results:\n${resultsLink}\n\n⏰ New round starts in 1 minute!`;
+    const badge = winner.badge || "";
+    const winnerMsg = `🎉 CONGRATULATIONS!\n🏆 Winner: ${badge} ${winner.user}\n🔥 Votes: ${winner.votes}\n💰 Prize: ${winnerAmt.toFixed(3)} SOL\n\n📊 Total Prize Pool: ${prizePool.toFixed(3)} SOL\n\nCheck all winners and full results:\n${resultsLink}\n\n⏰ New round starts in 1 minute!`;
     
-    await bot.sendMessage(`@${MAIN_CHANNEL}`, winnerMsg, { parse_mode: "Markdown", disable_web_page_preview: true });
+    await bot.sendMessage(`@${MAIN_CHANNEL}`, winnerMsg);
     console.log("✅ Top winner announced in main channel");
   } catch (err) {
-    console.error("❌ Failed to announce in main channel:", err);
-    console.error("Error details:", JSON.stringify(err, null, 2));
+    console.error("❌ Failed to announce in main channel:", err.message);
+    console.error("Error details:", err);
   }
 
   // Reset state for next round
@@ -515,6 +612,8 @@ bot.on("message", async (msg) => {
     voters: [],
     paid: false,
     wallet: null,
+    amountPaid: 0, // Track how much they paid
+    multiplier: 1, // Default multiplier
   });
   saveState();
 });
