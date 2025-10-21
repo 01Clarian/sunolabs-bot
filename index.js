@@ -9,7 +9,18 @@ import {
   PublicKey,
   SystemProgram,
   Transaction,
+  ComputeBudgetProgram,
+  VersionedTransaction,
+  TransactionMessage,
 } from "@solana/web3.js";
+import {
+  getAssociatedTokenAddress,
+  createAssociatedTokenAccountInstruction,
+  TOKEN_PROGRAM_ID,
+  ASSOCIATED_TOKEN_PROGRAM_ID,
+} from "@solana/spl-token";
+import fetch from "node-fetch";
+import bs58 from "bs58";
 
 // === TELEGRAM CONFIG ===
 const token = process.env.BOT_TOKEN;
@@ -55,12 +66,18 @@ const TREASURY_PRIVATE_KEY = process.env.BOT_PRIVATE_KEY
 if (!TREASURY_PRIVATE_KEY) throw new Error("❌ BOT_PRIVATE_KEY missing!");
 const TREASURY_KEYPAIR = Keypair.fromSecretKey(TREASURY_PRIVATE_KEY);
 
+// === PUMP.FUN CONFIG ===
+const PUMP_PROGRAM = new PublicKey("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P");
+const PUMP_GLOBAL = new PublicKey("4wTV1YmiEkRvAtNtsSGPtUrqRYQMe5SKy2uB4Jjaxnjf");
+const PUMP_FEE = new PublicKey("CebN5WGQ4jvEPvsVU4EoHEpgzq1VV7AbicfhtW4xC9iM");
+const PUMP_EVENT_AUTHORITY = new PublicKey("Ce6TQqeHC9p8KetsN6JsjHK7UTZk7nasjjnr7XxXp9F1");
+
 // === STATE ===
 let treasurySOL = 0;
 let transFeeCollected = 0;
 let pendingPayments = [];
-let participants = []; // { userId, wallet, amount, tier, choice: "upload"/"vote", track?, votes?, voters? }
-let voters = []; // { userId, wallet, amount, tier, votedFor }
+let participants = [];
+let voters = [];
 let phase = "submission";
 let cycleStartTime = null;
 let nextPhaseTime = null;
@@ -70,7 +87,7 @@ const TIERS = {
   BASIC: { 
     min: 0.01, 
     max: 0.049,
-    retention: 0.50, // 50% goes to user as SUNO
+    retention: 0.50,
     multiplier: 1.0,
     name: "Basic",
     badge: "🎵"
@@ -78,7 +95,7 @@ const TIERS = {
   MID: { 
     min: 0.05, 
     max: 0.099,
-    retention: 0.55, // 55% goes to user
+    retention: 0.55,
     multiplier: 1.05,
     name: "Mid Tier",
     badge: "💎"
@@ -86,7 +103,7 @@ const TIERS = {
   HIGH: { 
     min: 0.10, 
     max: 0.499,
-    retention: 0.60, // 60% goes to user
+    retention: 0.60,
     multiplier: 1.10,
     name: "High Tier",
     badge: "👑"
@@ -94,14 +111,13 @@ const TIERS = {
   WHALE: { 
     min: 0.50,
     max: 999,
-    retention: 0.65, // 65-75% based on amount
-    multiplier: 1.15, // 1.15-1.50 based on amount
+    retention: 0.65,
+    multiplier: 1.15,
     name: "Whale",
     badge: "🐋"
   }
 };
 
-// Calculate tier from amount
 function getTier(amount) {
   if (amount >= TIERS.WHALE.min) return TIERS.WHALE;
   if (amount >= TIERS.HIGH.min) return TIERS.HIGH;
@@ -109,42 +125,284 @@ function getTier(amount) {
   return TIERS.BASIC;
 }
 
-// Calculate retention for whale tier (scales with amount)
 function getWhaleRetention(amount) {
   if (amount < 0.50) return 0.65;
-  if (amount >= 5.00) return 0.75; // Cap at 75%
-  // Linear scaling: 0.50 = 65%, 5.00 = 75%
+  if (amount >= 5.00) return 0.75;
   return 0.65 + ((amount - 0.50) / 4.50) * 0.10;
 }
 
-// Calculate multiplier for whale tier (scales with amount)
 function getWhaleMultiplier(amount) {
   if (amount < 0.50) return 1.15;
-  if (amount >= 5.00) return 1.50; // Cap at 1.50x
-  // Linear scaling: 0.50 = 1.15x, 5.00 = 1.50x
+  if (amount >= 5.00) return 1.50;
   return 1.15 + ((amount - 0.50) / 4.50) * 0.35;
 }
 
-// === MARKET INTEGRATION (Placeholder for Jupiter/DEX) ===
+// === LOGGING HELPERS ===
+function logToBoth(message, type = "info") {
+  const timestamp = new Date().toISOString();
+  const logMessage = `[${timestamp}] ${message}`;
+  
+  console.log(logMessage);
+  
+  // Send to redirect service for client-side logs
+  fetch(`${process.env.REDIRECT_URL || 'https://sunolabs-redirect.onrender.com'}/log`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ event: type, detail: message })
+  }).catch(() => {});
+}
+
+// === CHECK IF TOKEN HAS BONDED ===
+async function checkIfBonded() {
+  try {
+    logToBoth("🔍 Checking if SUNO has graduated from pump.fun...", "info");
+    
+    // Derive bonding curve PDA
+    const [bondingCurve] = PublicKey.findProgramAddressSync(
+      [Buffer.from("bonding-curve"), TOKEN_MINT.toBuffer()],
+      PUMP_PROGRAM
+    );
+    
+    const accountInfo = await connection.getAccountInfo(bondingCurve);
+    
+    if (!accountInfo) {
+      logToBoth("✅ Token has graduated to Raydium! Using Jupiter...", "success");
+      return true; // Bonded/graduated
+    }
+    
+    // Check if bonding curve is complete
+    const data = accountInfo.data;
+    const complete = data[8]; // Byte 8 indicates completion
+    
+    if (complete === 1) {
+      logToBoth("✅ Bonding curve complete! Token graduated. Using Jupiter...", "success");
+      return true;
+    }
+    
+    logToBoth("📊 Token still on pump.fun bonding curve. Using pump.fun buy...", "info");
+    return false;
+    
+  } catch (err) {
+    logToBoth(`⚠️ Bond check error: ${err.message}. Defaulting to Jupiter...`, "error");
+    return true; // Default to Jupiter on error
+  }
+}
+
+// === PUMP.FUN BUY ===
+async function buyOnPumpFun(solAmount, recipientWallet) {
+  try {
+    logToBoth(`🚀 Starting pump.fun buy: ${solAmount.toFixed(4)} SOL → ${recipientWallet.substring(0, 8)}...`, "info");
+    
+    const [bondingCurve] = PublicKey.findProgramAddressSync(
+      [Buffer.from("bonding-curve"), TOKEN_MINT.toBuffer()],
+      PUMP_PROGRAM
+    );
+    
+    const [associatedBondingCurve] = PublicKey.findProgramAddressSync(
+      [
+        bondingCurve.toBuffer(),
+        TOKEN_PROGRAM_ID.toBuffer(),
+        TOKEN_MINT.toBuffer(),
+      ],
+      ASSOCIATED_TOKEN_PROGRAM_ID
+    );
+    
+    const recipientPubkey = new PublicKey(recipientWallet);
+    const recipientTokenAccount = await getAssociatedTokenAddress(
+      TOKEN_MINT,
+      recipientPubkey
+    );
+    
+    // Check if ATA exists
+    const ataInfo = await connection.getAccountInfo(recipientTokenAccount);
+    const needsATA = !ataInfo;
+    
+    if (needsATA) {
+      logToBoth("📝 Creating associated token account...", "info");
+    }
+    
+    // Calculate slippage (1% slippage)
+    const slippageBps = 100; // 1%
+    const lamports = Math.floor(solAmount * 1e9);
+    
+    logToBoth(`💰 Buy amount: ${lamports.toLocaleString()} lamports`, "info");
+    
+    const tx = new Transaction();
+    
+    // Add compute budget
+    tx.add(
+      ComputeBudgetProgram.setComputeUnitLimit({ units: 200_000 }),
+      ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 50_000 })
+    );
+    
+    // Create ATA if needed
+    if (needsATA) {
+      tx.add(
+        createAssociatedTokenAccountInstruction(
+          TREASURY_KEYPAIR.publicKey,
+          recipientTokenAccount,
+          recipientPubkey,
+          TOKEN_MINT
+        )
+      );
+    }
+    
+    // Build buy instruction
+    const keys = [
+      { pubkey: PUMP_GLOBAL, isSigner: false, isWritable: false },
+      { pubkey: PUMP_FEE, isSigner: false, isWritable: true },
+      { pubkey: TOKEN_MINT, isSigner: false, isWritable: false },
+      { pubkey: bondingCurve, isSigner: false, isWritable: true },
+      { pubkey: associatedBondingCurve, isSigner: false, isWritable: true },
+      { pubkey: recipientTokenAccount, isSigner: false, isWritable: true },
+      { pubkey: TREASURY_KEYPAIR.publicKey, isSigner: true, isWritable: true },
+      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+      { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
+      { pubkey: new PublicKey("SysvarRent111111111111111111111111111111111"), isSigner: false, isWritable: false },
+      { pubkey: PUMP_EVENT_AUTHORITY, isSigner: false, isWritable: false },
+      { pubkey: PUMP_PROGRAM, isSigner: false, isWritable: false },
+    ];
+    
+    // Buy instruction data: [102, 6, 190, 52, 184, 101, 70, 20] + amount + max_sol + slippage
+    const data = Buffer.alloc(24);
+    data.write("66063bbe34b84614", 0, "hex"); // Buy discriminator
+    data.writeBigUInt64LE(BigInt(lamports), 8);
+    data.writeBigUInt64LE(BigInt(slippageBps), 16);
+    
+    tx.add({
+      keys,
+      programId: PUMP_PROGRAM,
+      data,
+    });
+    
+    tx.feePayer = TREASURY_KEYPAIR.publicKey;
+    const { blockhash } = await connection.getLatestBlockhash();
+    tx.recentBlockhash = blockhash;
+    
+    logToBoth("✍️ Signing transaction...", "info");
+    const sig = await connection.sendTransaction(tx, [TREASURY_KEYPAIR], {
+      skipPreflight: false,
+      preflightCommitment: "confirmed",
+    });
+    
+    logToBoth(`📤 Transaction sent: ${sig.substring(0, 8)}...`, "success");
+    logToBoth("⏳ Confirming transaction...", "info");
+    
+    await connection.confirmTransaction(sig, "confirmed");
+    
+    logToBoth(`✅ Pump.fun buy complete! Tx: ${sig}`, "success");
+    
+    // Get token balance
+    const balance = await connection.getTokenAccountBalance(recipientTokenAccount);
+    const tokenAmount = parseInt(balance.value.amount);
+    
+    logToBoth(`🪙 Received ${tokenAmount.toLocaleString()} SUNO tokens`, "success");
+    
+    return tokenAmount;
+    
+  } catch (err) {
+    logToBoth(`❌ Pump.fun buy failed: ${err.message}`, "error");
+    throw err;
+  }
+}
+
+// === JUPITER SWAP ===
+async function buyOnJupiter(solAmount, recipientWallet) {
+  try {
+    logToBoth(`🪐 Starting Jupiter swap: ${solAmount.toFixed(4)} SOL → SUNO`, "info");
+    
+    const lamports = Math.floor(solAmount * 1e9);
+    const recipientPubkey = new PublicKey(recipientWallet);
+    
+    // Get quote from Jupiter
+    logToBoth("📊 Getting Jupiter quote...", "info");
+    const quoteResponse = await fetch(
+      `https://quote-api.jup.ag/v6/quote?inputMint=So11111111111111111111111111111111111111112&outputMint=${TOKEN_MINT.toBase58()}&amount=${lamports}&slippageBps=100`
+    );
+    
+    const quoteData = await quoteResponse.json();
+    
+    if (!quoteData || quoteData.error) {
+      throw new Error(`Quote failed: ${quoteData?.error || 'Unknown error'}`);
+    }
+    
+    const outAmount = parseInt(quoteData.outAmount);
+    logToBoth(`💎 Quote: ${lamports.toLocaleString()} lamports → ${outAmount.toLocaleString()} SUNO`, "info");
+    
+    // Get swap transaction
+    logToBoth("🔨 Building swap transaction...", "info");
+    const swapResponse = await fetch('https://quote-api.jup.ag/v6/swap', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        quoteResponse: quoteData,
+        userPublicKey: TREASURY_KEYPAIR.publicKey.toBase58(),
+        destinationTokenAccount: recipientWallet,
+        wrapAndUnwrapSol: true,
+        dynamicComputeUnitLimit: true,
+        prioritizationFeeLamports: 50000,
+      })
+    });
+    
+    const swapData = await swapResponse.json();
+    
+    if (!swapData.swapTransaction) {
+      throw new Error('No swap transaction returned');
+    }
+    
+    logToBoth("✍️ Signing and sending transaction...", "info");
+    
+    // Deserialize and sign
+    const swapTransactionBuf = Buffer.from(swapData.swapTransaction, 'base64');
+    const transaction = VersionedTransaction.deserialize(swapTransactionBuf);
+    transaction.sign([TREASURY_KEYPAIR]);
+    
+    const rawTransaction = transaction.serialize();
+    const sig = await connection.sendRawTransaction(rawTransaction, {
+      skipPreflight: false,
+      preflightCommitment: 'confirmed',
+    });
+    
+    logToBoth(`📤 Transaction sent: ${sig.substring(0, 8)}...`, "success");
+    logToBoth("⏳ Confirming transaction...", "info");
+    
+    await connection.confirmTransaction(sig, 'confirmed');
+    
+    logToBoth(`✅ Jupiter swap complete! Tx: ${sig}`, "success");
+    logToBoth(`🪙 Estimated ${outAmount.toLocaleString()} SUNO tokens sent to user`, "success");
+    
+    return outAmount;
+    
+  } catch (err) {
+    logToBoth(`❌ Jupiter swap failed: ${err.message}`, "error");
+    throw err;
+  }
+}
+
+// === MARKET INTEGRATION (Auto-detect pump.fun or Jupiter) ===
 async function buySUNOOnMarket(solAmount, recipientWallet) {
-  // TODO: Integrate with Jupiter API or DEX
-  // For now, this is a placeholder that logs the intent
-  
-  console.log(`🔄 Market buy: ${solAmount.toFixed(4)} SOL worth of SUNO for ${recipientWallet.substring(0, 8)}...`);
-  
-  // Placeholder: Calculate SUNO amount based on estimated price
-  const estimatedPrice = 0.0001; // 1 SUNO = 0.0001 SOL (update with real price)
-  const sunoAmount = Math.floor(solAmount / estimatedPrice);
-  
-  console.log(`📊 Estimated: ${sunoAmount.toLocaleString()} SUNO tokens`);
-  
-  // TODO: Actual implementation:
-  // 1. Get quote from Jupiter API
-  // 2. Execute swap: SOL → SUNO
-  // 3. Send SUNO to recipientWallet
-  // 4. Return actual amount received
-  
-  return sunoAmount;
+  try {
+    logToBoth(`🔄 Market buy initiated: ${solAmount.toFixed(4)} SOL for ${recipientWallet.substring(0, 8)}...`, "info");
+    
+    const isBonded = await checkIfBonded();
+    
+    let sunoAmount;
+    if (isBonded) {
+      // Use Jupiter
+      sunoAmount = await buyOnJupiter(solAmount, recipientWallet);
+    } else {
+      // Use pump.fun
+      sunoAmount = await buyOnPumpFun(solAmount, recipientWallet);
+    }
+    
+    logToBoth(`✅ Purchase complete! ${sunoAmount.toLocaleString()} SUNO → ${recipientWallet.substring(0, 8)}...`, "success");
+    return sunoAmount;
+    
+  } catch (err) {
+    logToBoth(`❌ Market buy failed: ${err.message}`, "error");
+    console.error(err.stack);
+    throw err;
+  }
 }
 
 // === STATE PERSISTENCE ===
@@ -230,11 +488,7 @@ app.post("/confirm-payment", async (req, res) => {
     const userKey = String(userId);
     const amountNum = parseFloat(amount) || 0.01;
     
-    console.log("✅ Payment received:", { 
-      amount: amountNum,
-      user: userKey,
-      wallet: senderWallet.substring(0, 8) + "..."
-    });
+    logToBoth(`✅ Payment received: ${amountNum} SOL from ${senderWallet.substring(0, 8)}...`, "success");
 
     // Check for duplicates
     let existing = pendingPayments.find((p) => p.reference === reference);
@@ -253,46 +507,44 @@ app.post("/confirm-payment", async (req, res) => {
     }
 
     // === PAYMENT SPLIT ===
-    const transFee = amountNum * 0.10; // 10% trans fee
-    const remaining = amountNum * 0.90; // 90% remaining
+    const transFee = amountNum * 0.10;
+    const remaining = amountNum * 0.90;
     
     const tier = getTier(amountNum);
     let retention = tier.retention;
     let multiplier = tier.multiplier;
     
-    // Whale scaling
     if (tier === TIERS.WHALE) {
       retention = getWhaleRetention(amountNum);
       multiplier = getWhaleMultiplier(amountNum);
     }
     
-    const userAmount = remaining * retention; // For buying SUNO
-    const treasuryAmount = remaining * (1 - retention); // For competition
+    const userAmount = remaining * retention;
+    const treasuryAmount = remaining * (1 - retention);
     
-    console.log(`💰 Split: ${transFee.toFixed(4)} trans fee, ${userAmount.toFixed(4)} user SUNO, ${treasuryAmount.toFixed(4)} treasury`);
+    logToBoth(`💰 Split: ${transFee.toFixed(4)} trans fee | ${userAmount.toFixed(4)} SUNO buy | ${treasuryAmount.toFixed(4)} treasury`, "info");
 
     // === SEND TRANS FEE ===
     try {
       await sendSOLPayout(TRANS_FEE_WALLET.toBase58(), transFee, "Trans fee");
       transFeeCollected += transFee;
     } catch (err) {
-      console.error("❌ Trans fee failed:", err.message);
+      logToBoth(`❌ Trans fee failed: ${err.message}`, "error");
     }
 
     // === BUY SUNO FOR USER ===
     let sunoAmount = 0;
     try {
       sunoAmount = await buySUNOOnMarket(userAmount, senderWallet);
-      console.log(`✅ Bought ${sunoAmount.toLocaleString()} SUNO for user`);
+      logToBoth(`✅ Bought ${sunoAmount.toLocaleString()} SUNO for user ${senderWallet.substring(0, 8)}...`, "success");
     } catch (err) {
-      console.error("❌ SUNO purchase failed:", err.message);
+      logToBoth(`❌ SUNO purchase failed: ${err.message}`, "error");
     }
 
     // === ADD TO TREASURY ===
     treasurySOL += treasuryAmount;
 
     // === SAVE USER DATA ===
-    // Don't create participant yet - wait for choice
     const userData = {
       userId: userKey,
       wallet: senderWallet,
@@ -333,7 +585,6 @@ app.post("/confirm-payment", async (req, res) => {
         }
       );
       
-      // Store user data temporarily
       pendingPayments.find(p => p.reference === reference).userData = userData;
       
     } catch (e) {
@@ -342,7 +593,7 @@ app.post("/confirm-payment", async (req, res) => {
 
     res.json({ ok: true });
   } catch (err) {
-    console.error("💥 confirm-payment error:", err.stack || err);
+    logToBoth(`💥 confirm-payment error: ${err.message}`, "error");
     res.status(500).json({ error: "Internal error" });
   }
 });
@@ -365,9 +616,9 @@ async function sendSOLPayout(destination, amountSOL, reason = "payout") {
 
     const sig = await connection.sendTransaction(tx, [TREASURY_KEYPAIR]);
     await connection.confirmTransaction(sig, "confirmed");
-    console.log(`💸 ${reason}: ${amountSOL.toFixed(4)} SOL → ${destination.substring(0, 8)}...`);
+    logToBoth(`💸 ${reason}: ${amountSOL.toFixed(4)} SOL → ${destination.substring(0, 8)}...`, "success");
   } catch (err) {
-    console.error(`⚠️ ${reason} failed:`, err.message);
+    logToBoth(`⚠️ ${reason} failed: ${err.message}`, "error");
   }
 }
 
@@ -479,13 +730,11 @@ async function announceWinners() {
   const weights = [0.40, 0.25, 0.20, 0.10, 0.05];
   const numWinners = Math.min(5, sorted.length);
   
-  // 80% for competition prizes, 20% for voter rewards
   const prizePool = treasurySOL * 0.80;
   const voterPool = treasurySOL * 0.20;
   
   let resultsMsg = `🏆 Competition Results 🏆\n💰 Prize Pool: ${prizePool.toFixed(3)} SOL\n\n`;
   
-  // Pay winners
   for (let i = 0; i < numWinners; i++) {
     const w = sorted[i];
     const baseAmt = prizePool * weights[i];
@@ -502,7 +751,6 @@ async function announceWinners() {
     }
   }
 
-  // === VOTER REWARDS ===
   const winner = sorted[0];
   const winnerVoters = voters.filter(v => v.votedFor === winner.userId);
   
@@ -526,7 +774,6 @@ async function announceWinners() {
     resultsMsg += `✅ ${winnerVoters.length} voter(s) rewarded!`;
   }
 
-  // Post results
   try {
     await bot.sendMessage(`@${CHANNEL}`, resultsMsg);
     await bot.sendMessage(
@@ -535,7 +782,6 @@ async function announceWinners() {
     );
   } catch {}
 
-  // Reset
   console.log(`💰 Distributed ${treasurySOL.toFixed(3)} SOL`);
   participants = [];
   voters = [];
@@ -558,7 +804,6 @@ bot.on("message", async (msg) => {
     return;
   }
 
-  // Store audio temporarily
   const reference = Keypair.generate().publicKey;
   const redirectLink = `https://sunolabs-redirect.onrender.com/pay?recipient=${TREASURY.toBase58()}&amount=0.01&reference=${reference.toBase58()}&userId=${userId}`;
 
@@ -585,13 +830,11 @@ bot.on("message", async (msg) => {
   );
 });
 
-// === USER CHOICE HANDLER ===
 bot.on("callback_query", async (q) => {
   try {
     if (q.data.startsWith("choice_")) {
       const [, choice, userKey] = q.data.split("_");
       
-      // Find user's payment data
       const payment = pendingPayments.find(p => p.userId === userKey && p.userData);
       
       if (!payment || !payment.userData) {
@@ -600,7 +843,6 @@ bot.on("callback_query", async (q) => {
       }
 
       if (choice === "upload") {
-        // Find their audio
         const audio = pendingPayments.find(p => p.userId === userKey && p.track);
         
         if (!audio) {
@@ -608,7 +850,6 @@ bot.on("callback_query", async (q) => {
           return;
         }
 
-        // Add to participants
         participants.push({
           ...payment.userData,
           choice: "upload",
@@ -623,7 +864,6 @@ bot.on("callback_query", async (q) => {
         await bot.sendMessage(userKey, "🎵 Your track is entered! Good luck! 🍀");
         
       } else if (choice === "vote") {
-        // Add to voters (will vote during voting phase)
         voters.push({
           ...payment.userData,
           choice: "vote",
@@ -638,7 +878,6 @@ bot.on("callback_query", async (q) => {
       return;
     }
 
-    // === VOTING ===
     if (q.data.startsWith("vote_")) {
       const [, userIdStr] = q.data.split("_");
       const targetId = String(userIdStr);
@@ -659,7 +898,6 @@ bot.on("callback_query", async (q) => {
       entry.votes++;
       entry.voters.push(voterId);
       
-      // Track voter choice
       const voter = voters.find(v => v.userId === voterId);
       if (voter) {
         voter.votedFor = targetId;
