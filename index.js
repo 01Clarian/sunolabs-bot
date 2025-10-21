@@ -240,6 +240,10 @@ async function checkTreasuryTokenBalance() {
     
     return balance;
   } catch (err) {
+    if (err.message.includes('could not find account')) {
+      console.warn("⚠️ Treasury token account doesn't exist yet - will be created on first token transfer");
+      return 0;
+    }
     console.error("❌ Failed to check treasury balance:", err.message);
     return 0;
   }
@@ -507,10 +511,11 @@ async function startNewCycle() {
   
   // Announce to main channel
   try {
+    const botMention = botUsername.startsWith('@') ? botUsername : `@${botUsername}`;
+    
     await bot.sendMessage(
       `@${MAIN_CHANNEL}`,
-      `🎬 *NEW ROUND STARTED!*\n\n💰 Prize Pool: ${prizePool.toFixed(3)} SOL\n⏰ 5 minutes to submit your track!\n\n🎮 How to Enter:\n1️⃣ Send audio to @${botUsername}\n2️⃣ Buy SUNO tokens + enter\n3️⃣ Vote for favorites\n4️⃣ Win SOL prizes!\n\n🏆 Top 5 share the prize pool\n💎 Token holders earn passive rewards\n\nGo! ⚡`,
-      { parse_mode: "Markdown" }
+      `🎬 NEW ROUND STARTED!\n\n💰 Prize Pool: ${prizePool.toFixed(3)} SOL\n⏰ 5 minutes to submit your track!\n\n🎮 How to Enter:\n• Send audio to ${botMention}\n• Buy SUNO tokens + enter\n• Vote for favorites\n• Win SOL prizes!\n\n🏆 Top 5 share the prize pool\n💎 Token holders earn passive rewards\n\nGo! ⚡`
     );
     console.log("✅ Posted cycle start to main channel");
   } catch (err) {
@@ -521,8 +526,7 @@ async function startNewCycle() {
   try {
     await bot.sendMessage(
       `@${CHANNEL}`,
-      `🎬 *New Round!*\n💰 ${prizePool.toFixed(3)} SOL\n⏰ 5 min to submit\n\nSend audio to the bot!`,
-      { parse_mode: "Markdown" }
+      `🎬 New Round!\n💰 ${prizePool.toFixed(3)} SOL\n⏰ 5 min to submit\n\nSend audio to the bot!`
     );
     console.log("✅ Posted cycle start to voting channel");
   } catch (err) {
@@ -583,15 +587,13 @@ async function startVoting() {
   try {
     await bot.sendMessage(
       `@${CHANNEL}`,
-      `🗳️ *VOTING STARTED!*\n💰 Prize Pool: ${prizePool.toFixed(3)} SOL\n⏰ *5 minutes to vote!*\n\n🔥 Vote for your favorites below!`,
-      { parse_mode: "Markdown" }
+      `🗳️ VOTING STARTED!\n💰 Prize Pool: ${prizePool.toFixed(3)} SOL\n⏰ 5 minutes to vote!\n\n🔥 Vote for your favorites below!`
     );
 
     for (const s of paidSubs) {
       const badge = s.badge || "🎧";
       await bot.sendAudio(`@${CHANNEL}`, s.track, {
-        caption: `${badge} ${s.user} — *${s.title}*\n🔥 0`,
-        parse_mode: "Markdown",
+        caption: `${badge} ${s.user} — ${s.title}\n🔥 0`,
         reply_markup: {
           inline_keyboard: [[{ text: "🔥 Vote", callback_data: `vote_${s.userId}` }]]
         }
@@ -710,8 +712,8 @@ bot.on("message", async (msg) => {
 
   await bot.sendMessage(
     userId,
-    `🎧 Track received!\n\n👉 [Buy SUNO Tokens & Enter](${redirectLink})\n\n🪙 Get tokens + compete!`,
-    { parse_mode: "Markdown", disable_web_page_preview: true }
+    `🎧 Track received!\n\n👉 Buy SUNO Tokens & Enter:\n${redirectLink}\n\n🪙 Get tokens + compete!`,
+    { disable_web_page_preview: true }
   );
 
   submissions.push({
@@ -752,10 +754,9 @@ bot.on("callback_query", async (q) => {
 
     const badge = entry.badge || "🎧";
     try {
-      await bot.editMessageCaption(`${badge} ${entry.user} — *${entry.title}*\n🔥 ${entry.votes}`, {
+      await bot.editMessageCaption(`${badge} ${entry.user} — ${entry.title}\n🔥 ${entry.votes}`, {
         chat_id: q.message.chat.id,
         message_id: q.message.message_id,
-        parse_mode: "Markdown",
         reply_markup: {
           inline_keyboard: [[{ text: "🔥 Vote", callback_data: `vote_${entry.userId}` }]]
         }
