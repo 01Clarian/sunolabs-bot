@@ -265,11 +265,27 @@ async function buyOnPumpFun(solAmount, recipientWallet) {
       throw new Error(`PumpPortal quote failed: ${quoteResponse.status} - ${errorText}`);
     }
     
-    const quoteData = await quoteResponse.text();
-    console.log("✅ Got serialized transaction from PumpPortal");
+    // PumpPortal returns base64 transaction directly as text (not JSON)
+    const txBase64 = await quoteResponse.text();
+    console.log(`✅ Got response (${txBase64.length} chars)`);
+    console.log(`📝 First 100 chars: ${txBase64.substring(0, 100)}...`);
+    
+    // Check if it's an error message (JSON) instead of base64
+    if (txBase64.startsWith('{') || txBase64.startsWith('[')) {
+      const errorData = JSON.parse(txBase64);
+      console.error(`❌ PumpPortal returned error:`, errorData);
+      throw new Error(`PumpPortal error: ${JSON.stringify(errorData)}`);
+    }
+    
+    // Check if response looks like valid base64
+    if (!/^[A-Za-z0-9+/=]+$/.test(txBase64.trim())) {
+      console.error(`❌ Response doesn't look like base64:`, txBase64.substring(0, 200));
+      throw new Error(`Invalid response format from PumpPortal`);
+    }
     
     // Deserialize and sign transaction
-    const txBuf = Buffer.from(quoteData, 'base64');
+    console.log("🔓 Deserializing transaction...");
+    const txBuf = Buffer.from(txBase64, 'base64');
     const tx = VersionedTransaction.deserialize(txBuf);
     tx.sign([TREASURY_KEYPAIR]);
     
@@ -434,10 +450,18 @@ async function buySUNOOnMarket(solAmount, recipientWallet) {
     let sunoAmount;
     if (isBonded) {
       // Use Jupiter
+      console.log("📊 Using Jupiter (token graduated)...");
       sunoAmount = await buyOnJupiter(solAmount, recipientWallet);
     } else {
-      // Use PumpPortal API
-      sunoAmount = await buyOnPumpFun(solAmount, recipientWallet);
+      // Try pump.fun, fallback to Jupiter if it fails
+      console.log("📊 Trying PumpPortal (token on bonding curve)...");
+      try {
+        sunoAmount = await buyOnPumpFun(solAmount, recipientWallet);
+      } catch (pumpError) {
+        console.error(`⚠️ PumpPortal failed: ${pumpError.message}`);
+        console.log("🔄 Falling back to Jupiter...");
+        sunoAmount = await buyOnJupiter(solAmount, recipientWallet);
+      }
     }
     
     console.log(`✅ Purchase complete! ${sunoAmount.toLocaleString()} SUNO → ${recipientWallet.substring(0, 8)}...`);
