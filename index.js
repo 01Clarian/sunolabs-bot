@@ -338,10 +338,11 @@ async function startVoting() {
   if (!paidSubs.length) {
     console.log("🚫 No paid submissions this round — restarting cycle in 1 minute");
     
+    // Only post to voting channel, not main channel
     const noSubsMsg = "🚫 No submissions this round — new round starting in 1 minute!";
     try {
-      await bot.sendMessage(`@${MAIN_CHANNEL}`, noSubsMsg);
       await bot.sendMessage(`@${CHANNEL}`, noSubsMsg);
+      console.log("✅ Posted empty round notice to voting channel");
     } catch (err) {
       console.error("❌ Failed to announce empty round:", err.message);
     }
