@@ -301,6 +301,12 @@ async function sendPayout(destination, amountSOL) {
 async function startNewCycle() {
   console.log("🔄 Starting new submission cycle...");
   
+  // Clean up any old unpaid submissions from previous cycle
+  const unpaidCount = submissions.filter(s => !s.paid).length;
+  if (unpaidCount > 0) {
+    console.log(`🧹 Cleaning up ${unpaidCount} unpaid submission(s) from previous cycle`);
+  }
+  
   phase = "submission";
   cycleStartTime = Date.now();
   nextPhaseTime = cycleStartTime + 5 * 60 * 1000;
@@ -524,11 +530,42 @@ bot.on("message", async (msg) => {
     return;
   }
 
-  if (submissions.find((s) => String(s.userId) === userId)) {
-    await bot.sendMessage(userId, "⚠️ You already submitted this round!");
+  // IMPROVED CHECK: Only block if they have a PAID submission
+  const existingPaidSubmission = submissions.find((s) => String(s.userId) === userId && s.paid);
+  if (existingPaidSubmission) {
+    await bot.sendMessage(userId, "⚠️ You already submitted and paid for this round!");
     return;
   }
 
+  // Check if they have an unpaid submission already
+  const existingUnpaidSubmission = submissions.find((s) => String(s.userId) === userId && !s.paid);
+  if (existingUnpaidSubmission) {
+    // They submitted before but didn't pay - allow resubmission
+    const reference = Keypair.generate().publicKey;
+    const redirectLink = `https://sunolabs-redirect.onrender.com/pay?recipient=${TREASURY.toBase58()}&amount=0.01&reference=${reference.toBase58()}&userId=${userId}&label=SunoLabs%20Entry`;
+
+    const now = Date.now();
+    const timeRemaining = cycleStartTime ? Math.max(0, (cycleStartTime + 5 * 60 * 1000) - now) : 5 * 60 * 1000;
+    const minutesLeft = Math.ceil(timeRemaining / 60000);
+
+    await bot.sendMessage(
+      userId,
+      `🎧 You already sent a track, but payment is pending!\n\n*Complete your entry:*\nPay ≥ 0.01 SOL via the link below.\n\n👉 [Pay with Solana](${redirectLink})\n\n⏰ Submission window closes in ~${minutesLeft} min`,
+      { parse_mode: "Markdown", disable_web_page_preview: true }
+    );
+
+    // Update the existing submission with new reference
+    pendingPayments.push({
+      userId,
+      username: user,
+      reference: reference.toBase58(),
+      confirmed: false,
+    });
+    saveState();
+    return;
+  }
+
+  // New submission - create it
   const reference = Keypair.generate().publicKey;
   const redirectLink = `https://sunolabs-redirect.onrender.com/pay?recipient=${TREASURY.toBase58()}&amount=0.01&reference=${reference.toBase58()}&userId=${userId}&label=SunoLabs%20Entry`;
 
@@ -546,8 +583,7 @@ bot.on("message", async (msg) => {
 
   await bot.sendMessage(
     userId,
-    `🎧 Got your track!\n\n*Before it's accepted:*\nPay ≥ 0.01 SOL via the link below. Your wallet will automatically be saved for prize payouts.\n\n👉 [Submit your masterpiece](${redirectLink})\n\n⏰ Submission window closes in ~${minutesLeft} min\n📍
-  `,
+    `🎧 Got your track!\n\n*Before it's accepted:*\nPay ≥ 0.01 SOL via the link below. Your wallet will automatically be saved for prize payouts.\n\n👉 [Pay with Solana](${redirectLink})\n\n⏰ Submission window closes in ~${minutesLeft} min\n📍 Submit here: https://t.me/sunolabs`,
     { parse_mode: "Markdown", disable_web_page_preview: true }
   );
 
