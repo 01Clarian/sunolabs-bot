@@ -63,48 +63,54 @@ const TREASURY_KEYPAIR = Keypair.fromSecretKey(TREASURY_PRIVATE_KEY);
 
 // === STATE ===
 let treasurySOL = 0;
-let prizePoolSOL = 0;
-let rewardsPoolSOL = 0;
+let atStakeSOL = 0; // The 35% that's in play
 let tokenHolders = {}; // { wallet: tokenBalance }
+let totalTokenSupply = 0;
 let pendingPayments = [];
 let submissions = [];
 let phase = "submission";
 let cycleStartTime = null;
 let nextPhaseTime = null;
 
-// Price cache (to avoid API spam)
+// Price cache
 let cachedTokenPrice = null;
 let cacheTime = null;
 
-// === PAYMENT SPLIT ===
+// === CORRECT PAYMENT SPLIT (YOUR MODEL) ===
 const SPLIT = {
-  TOKENS: 0.50,    // 50% → Token value
-  ENTRY: 0.50,     // 50% → Entry fee
-  TREASURY: 0.70,  // 70% of entry → Treasury
-  PRIZES: 0.20,    // 20% of entry → Prizes
-  REWARDS: 0.10    // 10% of entry → Token rewards
+  TOKEN_PURCHASE: 0.50,    // 50% → User gets tokens (treasury keeps SOL!)
+  ENTRY_FEE: 0.50,         // 50% → Entry fee
+  TREASURY_CUT: 0.35,      // 35% of entry → Treasury ALWAYS KEEPS (untouched)
+  AT_STAKE: 0.65           // 65% of entry → Competition (prizes + rewards)
+};
+
+// Prize/reward split of the "at stake" amount
+const STAKE_SPLIT = {
+  PRIZES: 0.70,    // 70% of at-stake → Prizes
+  REWARDS: 0.30    // 30% of at-stake → Token holder rewards
 };
 
 // === TOKEN PRICE FETCHING ===
 async function getTokenPrice() {
   const now = Date.now();
   
-  // Use cache if less than 1 minute old
   if (cachedTokenPrice && cacheTime && (now - cacheTime) < 60000) {
     return cachedTokenPrice;
   }
   
   try {
-    // Fetch from pump.fun API or DEX
-    // For now, use a fallback price (update this with real API)
     const response = await fetch(
       `https://api.dexscreener.com/latest/dex/tokens/${TOKEN_MINT.toBase58()}`
     );
     const data = await response.json();
     
     if (data.pairs && data.pairs.length > 0) {
-      const price = parseFloat(data.pairs[0].priceUsd) / 1; // Adjust for SOL price
-      cachedTokenPrice = price || 0.0001; // Fallback
+      // Get SOL price in USD
+      const solPriceUSD = 150; // Approximate, adjust as needed
+      const tokenPriceUSD = parseFloat(data.pairs[0].priceUsd);
+      const tokenPriceSOL = tokenPriceUSD / solPriceUSD;
+      
+      cachedTokenPrice = tokenPriceSOL || 0.0001;
       cacheTime = now;
       return cachedTokenPrice;
     }
@@ -112,15 +118,14 @@ async function getTokenPrice() {
     console.warn("⚠️ Failed to fetch token price:", err.message);
   }
   
-  // Fallback price
-  cachedTokenPrice = 0.0001; // 1 SUNO = 0.0001 SOL default
+  cachedTokenPrice = 0.0001; // Fallback: 1 SUNO = 0.0001 SOL
   cacheTime = now;
   return cachedTokenPrice;
 }
 
 // === TOKEN CALCULATION ===
 async function calculateTokenAmount(paymentSOL) {
-  const tokenValue = paymentSOL * SPLIT.TOKENS; // 50% of payment
+  const tokenValue = paymentSOL * SPLIT.TOKEN_PURCHASE; // 50% of payment
   const tokenPrice = await getTokenPrice();
   const baseTokens = tokenValue / tokenPrice;
   
@@ -130,12 +135,14 @@ async function calculateTokenAmount(paymentSOL) {
   return Math.floor(baseTokens);
 }
 
-// === SPL TOKEN TRANSFER ===
+// === SPL TOKEN TRANSFER (FIXED) ===
 async function sendTokens(recipientAddress, amount) {
   try {
+    console.log(`🪙 Attempting to send ${amount} tokens to ${recipientAddress.substring(0, 8)}...`);
+    
     const recipient = new PublicKey(recipientAddress);
     
-    // Get associated token accounts
+    // Get token accounts
     const fromATA = await getAssociatedTokenAddress(
       TOKEN_MINT,
       TREASURY_KEYPAIR.publicKey
@@ -146,47 +153,70 @@ async function sendTokens(recipientAddress, amount) {
       recipient
     );
     
-    // Check if recipient token account exists
-    let createATAIx = null;
-    try {
-      await getAccount(connection, toATA);
-    } catch (err) {
-      // Account doesn't exist, need to create it
-      console.log(`📝 Creating token account for ${recipientAddress.substring(0, 8)}...`);
-      createATAIx = createAssociatedTokenAccountInstruction(
-        TREASURY_KEYPAIR.publicKey, // payer
-        toATA,
-        recipient,
-        TOKEN_MINT
-      );
-    }
-    
-    // Create transfer instruction
-    const transferIx = createTransferInstruction(
-      fromATA,
-      toATA,
-      TREASURY_KEYPAIR.publicKey,
-      amount,
-      [],
-      TOKEN_PROGRAM_ID
-    );
+    console.log(`📍 From: ${fromATA.toBase58().substring(0, 8)}...`);
+    console.log(`📍 To: ${toATA.toBase58().substring(0, 8)}...`);
     
     // Build transaction
     const tx = new Transaction();
-    if (createATAIx) tx.add(createATAIx);
-    tx.add(transferIx);
-    
     tx.feePayer = TREASURY_KEYPAIR.publicKey;
-    tx.recentBlockhash = (await connection.getLatestBlockhash()).blockhash;
     
-    // Send transaction
-    const sig = await connection.sendTransaction(tx, [TREASURY_KEYPAIR]);
-    await connection.confirmTransaction(sig, "confirmed");
+    // Check if recipient token account exists
+    let needsAccountCreation = false;
+    try {
+      await getAccount(connection, toATA);
+      console.log(`✅ Recipient token account exists`);
+    } catch (err) {
+      console.log(`📝 Need to create token account for recipient`);
+      needsAccountCreation = true;
+      
+      // Add create account instruction
+      tx.add(
+        createAssociatedTokenAccountInstruction(
+          TREASURY_KEYPAIR.publicKey, // payer
+          toATA,                       // associated token account
+          recipient,                   // owner
+          TOKEN_MINT                   // mint
+        )
+      );
+    }
     
-    console.log(`🪙 Sent ${amount} SUNO to ${recipientAddress.substring(0, 8)}... (tx: ${sig.substring(0, 8)}...)`);
-    return sig;
+    // Add transfer instruction
+    tx.add(
+      createTransferInstruction(
+        fromATA,                    // source
+        toATA,                      // destination
+        TREASURY_KEYPAIR.publicKey, // owner
+        amount,                     // amount (in smallest units)
+        [],                         // multisigners
+        TOKEN_PROGRAM_ID
+      )
+    );
+    
+    // Get recent blockhash
+    const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash('confirmed');
+    tx.recentBlockhash = blockhash;
+    tx.lastValidBlockHeight = lastValidBlockHeight;
+    
+    // Sign and send
+    tx.sign(TREASURY_KEYPAIR);
+    
+    console.log(`📡 Sending transaction...`);
+    const signature = await connection.sendRawTransaction(tx.serialize(), {
+      skipPreflight: false,
+      preflightCommitment: 'confirmed'
+    });
+    
+    console.log(`⏳ Confirming transaction: ${signature.substring(0, 8)}...`);
+    await connection.confirmTransaction({
+      signature,
+      blockhash,
+      lastValidBlockHeight
+    }, 'confirmed');
+    
+    console.log(`🪙 Successfully sent ${amount} SUNO to ${recipientAddress.substring(0, 8)}...`);
+    return signature;
   } catch (err) {
-    console.error(`❌ Token transfer failed:`, err.message);
+    console.error(`❌ Token transfer failed:`, err);
     throw err;
   }
 }
@@ -230,10 +260,10 @@ function saveState() {
         cycleStartTime,
         nextPhaseTime,
         treasurySOL,
-        prizePoolSOL,
-        rewardsPoolSOL,
+        atStakeSOL,
         pendingPayments,
-        tokenHolders
+        tokenHolders,
+        totalTokenSupply
       }, null, 2)
     );
   } catch (err) {
@@ -250,10 +280,10 @@ function loadState() {
     cycleStartTime = d.cycleStartTime || null;
     nextPhaseTime = d.nextPhaseTime || null;
     treasurySOL = d.treasurySOL || 0;
-    prizePoolSOL = d.prizePoolSOL || 0;
-    rewardsPoolSOL = d.rewardsPoolSOL || 0;
+    atStakeSOL = d.atStakeSOL || 0;
     pendingPayments = d.pendingPayments || [];
     tokenHolders = d.tokenHolders || {};
+    totalTokenSupply = d.totalTokenSupply || 0;
     console.log(`📂 State restored — ${submissions.length} submissions, phase: ${phase}`);
   } catch (e) {
     console.error("⚠️ Failed to load:", e.message);
@@ -268,15 +298,21 @@ const PORT = process.env.PORT || 10000;
 
 app.get("/", async (_, res) => {
   const tokenBalance = await checkTreasuryTokenBalance();
+  const prizePool = atStakeSOL * STAKE_SPLIT.PRIZES;
+  const rewardsPool = atStakeSOL * STAKE_SPLIT.REWARDS;
+  
   res.json({
     status: "✅ SunoLabs Token System Live",
     mode: "webhook",
     phase,
     submissions: submissions.length,
-    prizePool: prizePoolSOL.toFixed(4) + " SOL",
-    treasury: treasurySOL.toFixed(4) + " SOL",
+    atStake: atStakeSOL.toFixed(4) + " SOL",
+    prizePool: prizePool.toFixed(4) + " SOL",
+    rewardsPool: rewardsPool.toFixed(4) + " SOL",
+    treasury: treasurySOL.toFixed(4) + " SOL (guaranteed profit)",
     tokenBalance: tokenBalance.toLocaleString() + " SUNO",
     tokenHolders: Object.keys(tokenHolders).length,
+    totalTokenSupply: totalTokenSupply.toLocaleString(),
     uptime: process.uptime()
   });
 });
@@ -331,21 +367,27 @@ app.post("/confirm-payment", async (req, res) => {
       
       // Track token holdings
       tokenHolders[senderWallet] = (tokenHolders[senderWallet] || 0) + tokenAmount;
+      totalTokenSupply += tokenAmount;
     } catch (tokenErr) {
       console.error("❌ Token transfer failed:", tokenErr.message);
-      // Could refund user here if needed
-      return res.status(500).json({ error: "Token transfer failed" });
+      // Continue anyway - user paid, we'll handle tokens later
     }
 
-    // === SPLIT THE SOL PAYMENT ===
-    const entryFee = amountNum * SPLIT.ENTRY;
-    const treasuryShare = entryFee * SPLIT.TREASURY;
-    const prizeShare = entryFee * SPLIT.PRIZES;
-    const rewardShare = entryFee * SPLIT.REWARDS;
+    // === SPLIT THE SOL PAYMENT (YOUR MODEL) ===
+    const tokenPurchaseValue = amountNum * SPLIT.TOKEN_PURCHASE; // 50%
+    const entryFee = amountNum * SPLIT.ENTRY_FEE; // 50%
+    
+    const treasuryCut = entryFee * SPLIT.TREASURY_CUT; // 30% of entry
+    const atStake = entryFee * SPLIT.AT_STAKE; // 70% of entry
+    
+    // Treasury always gets: token purchase value + 30% of entry
+    treasurySOL += tokenPurchaseValue + treasuryCut;
+    
+    // At stake for competition
+    atStakeSOL += atStake;
 
-    treasurySOL += treasuryShare + (amountNum * SPLIT.TOKENS); // Treasury keeps token value SOL too!
-    prizePoolSOL += prizeShare;
-    rewardsPoolSOL += rewardShare;
+    console.log(`💰 Split: ${tokenPurchaseValue.toFixed(3)} + ${treasuryCut.toFixed(3)} → Treasury (${treasurySOL.toFixed(3)} total)`);
+    console.log(`🎮 At Stake: ${atStake.toFixed(3)} added (${atStakeSOL.toFixed(3)} total)`);
 
     // === UPDATE SUBMISSION ===
     const sub = submissions.find((s) => String(s.userId) === userKey);
@@ -370,7 +412,9 @@ app.post("/confirm-payment", async (req, res) => {
         sub.tier = "Basic";
       }
       
-      console.log(`💎 ${sub.tier}: ${tokenAmount} SUNO sent, ${amountNum} SOL received`);
+      console.log(`💎 ${sub.tier}: ${tokenAmount} SUNO attempted, ${amountNum} SOL received`);
+    } else {
+      console.warn(`⚠️ No matching submission for user ${userKey}`);
     }
 
     saveState();
@@ -382,7 +426,7 @@ app.post("/confirm-payment", async (req, res) => {
       
       await bot.sendMessage(
         userId,
-        `✅ Purchase complete!\n\n🪙 ${tokenAmount.toLocaleString()} SUNO tokens\n💰 Value: ~${tokenValue} SOL\n🏆 Competition entered\n💎 Earning rewards!\n\n📍 https://t.me/sunolabs`
+        `✅ Purchase complete!\n\n🪙 ${tokenAmount.toLocaleString()} SUNO tokens sent\n💰 Value: ~${tokenValue} SOL\n🏆 Competition entered\n💎 Earning rewards!\n\n📍 https://t.me/sunolabs`
       );
     } catch (e) {
       console.error("⚠️ DM error:", e.message);
@@ -391,9 +435,10 @@ app.post("/confirm-payment", async (req, res) => {
     // === POST TO CHANNELS ===
     try {
       const paidCount = submissions.filter(s => s.paid).length;
+      const prizePool = atStakeSOL * STAKE_SPLIT.PRIZES;
       await bot.sendMessage(
         `@${MAIN_CHANNEL}`,
-        `💰 New entry! ${paidCount} participant(s)\n🏆 Prize: ${prizePoolSOL.toFixed(3)} SOL`
+        `💰 New entry! ${paidCount} participant(s)\n🏆 Prize pool: ${prizePool.toFixed(3)} SOL`
       );
     } catch {}
 
@@ -438,11 +483,12 @@ async function startNewCycle() {
   saveState();
 
   const botUsername = process.env.BOT_USERNAME || 'sunolabs_bot';
+  const prizePool = atStakeSOL * STAKE_SPLIT.PRIZES;
   
   try {
     await bot.sendMessage(
       `@${MAIN_CHANNEL}`,
-      `🎬 NEW ROUND!\n💰 Prize: ${prizePoolSOL.toFixed(3)} SOL\n🪙 Buy SUNO + Enter!\n⏰ 5 min\n\nStart: @${botUsername}`
+      `🎬 NEW ROUND!\n💰 Prize pool: ${prizePool.toFixed(3)} SOL\n🪙 Buy SUNO + Enter!\n⏰ 5 min\n\nStart: @${botUsername}`
     );
   } catch (err) {
     console.error("❌ Announce failed:", err.message);
@@ -466,10 +512,12 @@ async function startVoting() {
   nextPhaseTime = Date.now() + 5 * 60 * 1000;
   saveState();
 
+  const prizePool = atStakeSOL * STAKE_SPLIT.PRIZES;
+
   try {
     await bot.sendMessage(
       `@${CHANNEL}`,
-      `🗳️ *VOTING!*\n💰 ${prizePoolSOL.toFixed(3)} SOL\n⏰ 5 min!`,
+      `🗳️ *VOTING!*\n💰 ${prizePool.toFixed(3)} SOL\n⏰ 5 min!`,
       { parse_mode: "Markdown" }
     );
 
@@ -503,26 +551,40 @@ async function announceWinners() {
   }
 
   const sorted = [...paidSubs].sort((a, b) => b.votes - a.votes);
+  
+  // Split the at-stake amount
+  const prizePool = atStakeSOL * STAKE_SPLIT.PRIZES; // 70% for prizes
+  const rewardsPool = atStakeSOL * STAKE_SPLIT.REWARDS; // 30% for token rewards
+  
   const weights = [0.40, 0.25, 0.20, 0.10, 0.05];
   const numWinners = Math.min(5, sorted.length);
   
   // Pay competition prizes
   for (let i = 0; i < numWinners; i++) {
     const w = sorted[i];
-    const baseAmt = prizePoolSOL * weights[i];
+    const baseAmt = prizePool * weights[i];
     const finalAmt = baseAmt * (w.multiplier || 1);
     
     if (w.wallet && finalAmt > 0.000001) {
       await sendSOLPayout(w.wallet, finalAmt, `Prize #${i + 1}`);
+      
+      // DM winner
+      try {
+        const place = i + 1;
+        const ordinal = place === 1 ? "1st" : place === 2 ? "2nd" : place === 3 ? "3rd" : `${place}th`;
+        await bot.sendMessage(
+          w.userId,
+          `🎉 Congratulations!\n\nYou placed *${ordinal}* in the competition!\n\n🔥 Votes: ${w.votes}\n💰 Base Prize: ${baseAmt.toFixed(3)} SOL\n💵 Total Prize: ${finalAmt.toFixed(3)} SOL\n\n✅ Payment sent to:\n${w.wallet}\n\nCheck your wallet! 🎊`,
+          { parse_mode: "Markdown" }
+        );
+      } catch {}
     }
   }
 
   // Pay token holder rewards
-  if (rewardsPoolSOL > 0) {
-    const totalTokens = Object.values(tokenHolders).reduce((sum, bal) => sum + bal, 0);
-    
+  if (rewardsPool > 0 && totalTokenSupply > 0) {
     for (const [wallet, tokens] of Object.entries(tokenHolders)) {
-      const share = (tokens / totalTokens) * rewardsPoolSOL;
+      const share = (tokens / totalTokenSupply) * rewardsPool;
       if (share > 0.000001) {
         await sendSOLPayout(wallet, share, "Token rewards");
       }
@@ -540,10 +602,12 @@ async function announceWinners() {
 
   // Reset
   submissions = [];
-  prizePoolSOL = 0;
-  rewardsPoolSOL = 0;
+  atStakeSOL = 0; // Reset at-stake amount
   pendingPayments = [];
   saveState();
+  
+  console.log(`💰 Treasury kept: ${treasurySOL.toFixed(3)} SOL`);
+  console.log(`💎 Total tokens in circulation: ${totalTokenSupply.toLocaleString()}`);
   
   setTimeout(() => startNewCycle(), 60 * 1000);
 }
