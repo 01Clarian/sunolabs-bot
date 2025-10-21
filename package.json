@@ -1,11 +1,10 @@
 {
   "name": "sunolabs-bot",
-  "version": "1.0.0",
-  "main": "index.js",
+  "version": "2.0.0",
+  "main": "bot.js",
   "type": "module",
   "scripts": {
-    "start": "node index.js",
-    "webhook": "node webhook.js"
+    "start": "node bot.js"
   },
   "dependencies": {
     "express": "^4.19.2",
@@ -14,7 +13,11 @@
     "node-cron": "^3.0.3",
     "fs-extra": "^11.2.0",
     "@solana/web3.js": "^1.95.8",
+    "@solana/spl-token": "^0.4.9",
     "@solana/pay": "^0.2.4",
     "bignumber.js": "^9.1.2"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   }
 }
