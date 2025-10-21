@@ -299,14 +299,14 @@ async function startNewCycle() {
   const votingChannelMsg = `🎬 *New Round Started!*\n💰 Prize Pool: ${prizePool.toFixed(3)} SOL\n⏰ Submit your tracks in the next 5 minutes!\n\n📍 Send your audio to @${process.env.BOT_USERNAME || 'sunolabs_bot'} and pay 0.01 SOL to enter!`;
 
   try {
-    await bot.sendMessage(`@${MAIN_CHANNEL}`, mainChannelMsg, { parse_mode: "Markdown" });
+    await bot.sendMessage(`@${MAIN_CHANNEL}`, mainChannelMsg, { parse_mode: "Markdown", disable_web_page_preview: true });
     console.log("✅ Posted cycle start to main channel");
   } catch (err) {
     console.error("❌ Failed to announce in main channel:", err.message);
   }
 
   try {
-    await bot.sendMessage(`@${CHANNEL}`, votingChannelMsg, { parse_mode: "Markdown" });
+    await bot.sendMessage(`@${CHANNEL}`, votingChannelMsg, { parse_mode: "Markdown", disable_web_page_preview: true });
     console.log("✅ Posted cycle start to voting channel");
   } catch (err) {
     console.error("❌ Failed to announce in voting channel:", err.message);
@@ -350,7 +350,7 @@ async function startVoting() {
     await bot.sendMessage(
       `@${MAIN_CHANNEL}`,
       `🗳️ *Voting is Now Live!*\n💰 Prize Pool: ${prizePool.toFixed(3)} SOL\n⏰ *5 minutes to vote!*\n🏆 Winners announced after voting ends\n\n👉 Go vote now: https://t.me/${CHANNEL}`,
-      { parse_mode: "Markdown" }
+      { parse_mode: "Markdown", disable_web_page_preview: true }
     );
     console.log("✅ Posted voting announcement to main channel");
   } catch (err) {
@@ -363,7 +363,7 @@ async function startVoting() {
     await bot.sendMessage(
       `@${CHANNEL}`,
       `🎬 *Voting Round Started!*\n💰 Prize Pool: ${prizePool.toFixed(3)} SOL\n⏰ *5 minutes to vote!*\n🏆 Winners announced after voting ends\n\n🔥 Vote for your favorites below!`,
-      { parse_mode: "Markdown" }
+      { parse_mode: "Markdown", disable_web_page_preview: true }
     );
     console.log("✅ Posted voting announcement to voting channel");
 
@@ -440,14 +440,13 @@ async function announceWinners() {
   try {
     const winner = sorted[0];
     const winnerAmt = prizePool * weights[0];
-    await bot.sendMessage(
-      `@${MAIN_CHANNEL}`,
-      `🎉 *Congratulations!*\n🏆 Winner: ${winner.user}\n🔥 Votes: ${winner.votes}\n💰 Prize: ${winnerAmt.toFixed(3)} SOL\n\n📊 Total Prize Pool: ${prizePool.toFixed(3)} SOL\n\n✨ Check all winners & full results:\n👉 https://t.me/${CHANNEL}\n\n⏰ New round starts in 1 minute!`,
-      { parse_mode: "Markdown" }
-    );
+    const winnerMsg = `🎉 *Congratulations!*\n🏆 Winner: ${winner.user}\n🔥 Votes: ${winner.votes}\n💰 Prize: ${winnerAmt.toFixed(3)} SOL\n\n📊 Total Prize Pool: ${prizePool.toFixed(3)} SOL\n\n✨ Check all winners and full results:\nhttps://t.me/${CHANNEL}\n\n⏰ New round starts in 1 minute!`;
+    
+    await bot.sendMessage(`@${MAIN_CHANNEL}`, winnerMsg, { parse_mode: "Markdown", disable_web_page_preview: true });
     console.log("✅ Top winner announced in main channel");
   } catch (err) {
-    console.error("❌ Failed to announce in main channel:", err.message);
+    console.error("❌ Failed to announce in main channel:", err);
+    console.error("Error details:", JSON.stringify(err, null, 2));
   }
 
   // Reset state for next round
