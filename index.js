@@ -383,6 +383,41 @@ bot.on("callback_query", async (q) => {
   }
 });
 
+// === SERVER STARTUP ===
+app.listen(PORT, async () => {
+  console.log(`🌐 SunoLabs Web Service running on port ${PORT}`);
+  
+  // Load state after server is up
+  loadState();
+  
+  // NOW start polling
+  try {
+    await bot.startPolling();
+    console.log("✅ Telegram bot polling started successfully");
+  } catch (err) {
+    console.error("❌ Failed to start polling:", err.message);
+    process.exit(1);
+  }
+  
+  // Start first cycle immediately if not already in progress
+  if (!cycleStartTime || phase === "cooldown") {
+    console.log("🚀 Starting initial cycle...");
+    setTimeout(() => startNewCycle(), 3000);
+  } else {
+    console.log(`⏳ Resuming ${phase} phase...`);
+  }
+});
+
+// === HEARTBEAT ===
+setInterval(() => {
+  const memUsage = process.memoryUsage();
+  console.log(
+    `⏰ Bot heartbeat — ${new Date().toISOString()} | Phase: ${phase} | Mem: ${(memUsage.heapUsed / 1024 / 1024).toFixed(2)}MB`
+  );
+}, 30000);
+
+console.log("✅ SunoLabs Bot initialized with automatic cycles...");
+
 // === START NEW CYCLE ===
 async function startNewCycle() {
   console.log("🔄 Starting new submission cycle...");
@@ -576,37 +611,4 @@ async function announceWinners() {
   setTimeout(() => startNewCycle(), 60 * 1000);
 }
 
-// Start server first, then bot
-app.listen(PORT, async () => {
-  console.log(`🌐 SunoLabs Web Service running on port ${PORT}`);
-  
-  // Load state after server is up
-  loadState();
-  
-  // NOW start polling
-  try {
-    await bot.startPolling();
-    console.log("✅ Telegram bot polling started successfully");
-  } catch (err) {
-    console.error("❌ Failed to start polling:", err.message);
-    process.exit(1);
-  }
-  
-  // Start first cycle immediately if not already in progress
-  if (!cycleStartTime || phase === "cooldown") {
-    console.log("🚀 Starting initial cycle...");
-    setTimeout(() => startNewCycle(), 3000);
-  } else {
-    console.log(`⏳ Resuming ${phase} phase...`);
-  }
-});
-
-// === HEARTBEAT ===
-setInterval(() => {
-  const memUsage = process.memoryUsage();
-  console.log(
-    `⏰ Bot heartbeat — ${new Date().toISOString()} | Phase: ${phase} | Mem: ${(memUsage.heapUsed / 1024 / 1024).toFixed(2)}MB`
-  );
-}, 30000);
-
-console.log("✅ SunoLabs Bot initialized with automatic cycles...");
+// === TELEGRAM BOT HANDLERS ===
