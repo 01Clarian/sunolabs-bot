@@ -19,8 +19,6 @@ import {
   TOKEN_PROGRAM_ID,
 } from "@solana/spl-token";
 import bs58 from "bs58";
-import { PumpSdk, getBuyTokenAmountFromSolAmount } from "@pump-fun/pump-sdk";
-import BN from "bn.js";
 
 // === TELEGRAM CONFIG ===
 const token = process.env.BOT_TOKEN;
@@ -230,7 +228,7 @@ async function checkIfBonded() {
       return true;
     }
     
-    console.log("📊 Token still on pump.fun bonding curve. Using official SDK...");
+    console.log("📊 Token still on pump.fun bonding curve. Using PumpPortal API...");
     return false;
     
   } catch (err) {
@@ -239,66 +237,48 @@ async function checkIfBonded() {
   }
 }
 
-// === PUMP.FUN BUY (Using Official SDK) ===
+// === PUMP.FUN BUY (Using PumpPortal API) ===
 async function buyOnPumpFun(solAmount, recipientWallet) {
   try {
-    console.log(`🚀 Starting pump.fun buy with OFFICIAL SDK: ${solAmount.toFixed(4)} SOL`);
-    console.log(`📍 Will buy to treasury then transfer to: ${recipientWallet.substring(0, 8)}...`);
+    console.log(`🚀 Starting pump.fun buy with PumpPortal API: ${solAmount.toFixed(4)} SOL`);
+    console.log(`📍 Buying directly to: ${recipientWallet.substring(0, 8)}...`);
     
-    const lamports = new BN(Math.floor(solAmount * 1e9));
-    console.log(`💰 Buy amount: ${lamports.toString()} lamports`);
-    
-    // Initialize official SDK
-    console.log("🔧 Initializing official Pump SDK...");
-    const sdk = new PumpSdk(connection);
-    
-    // Fetch global state
-    console.log("📊 Fetching global state...");
-    const global = await sdk.fetchGlobal();
-    
-    // Fetch buy state (bonding curve info)
-    console.log("🔍 Fetching buy state for token...");
-    const { bondingCurveAccountInfo, bondingCurve, associatedUserAccountInfo } = 
-      await sdk.fetchBuyState(TOKEN_MINT, TREASURY_KEYPAIR.publicKey);
-    
-    // Calculate token amount from SOL
-    const tokenAmount = getBuyTokenAmountFromSolAmount(global, bondingCurve, lamports);
-    console.log(`💎 Expected tokens: ${tokenAmount.toString()}`);
-    
-    // Get buy instructions from SDK
-    console.log("🔨 Building buy instructions with SDK...");
-    const instructions = await sdk.buyInstructions({
-      global,
-      bondingCurveAccountInfo,
-      bondingCurve,
-      associatedUserAccountInfo,
-      mint: TOKEN_MINT,
-      user: TREASURY_KEYPAIR.publicKey,
-      solAmount: lamports,
-      amount: tokenAmount,
-      slippage: 10, // 10% slippage
+    // Get quote first
+    console.log("📊 Getting PumpPortal quote...");
+    const quoteResponse = await fetch(`https://pumpportal.fun/api/trade-local`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        publicKey: TREASURY_KEYPAIR.publicKey.toBase58(),
+        action: "buy",
+        mint: TOKEN_MINT.toBase58(),
+        denominatedInSol: "true",
+        amount: solAmount,
+        slippage: 10,
+        priorityFee: 0.0001,
+        pool: "pump"
+      })
     });
     
-    // Build transaction
-    const tx = new Transaction();
+    if (!quoteResponse.ok) {
+      const errorText = await quoteResponse.text();
+      throw new Error(`PumpPortal quote failed: ${quoteResponse.status} - ${errorText}`);
+    }
     
-    // Add compute budget
-    tx.add(
-      ComputeBudgetProgram.setComputeUnitLimit({ units: 100000 }),
-      ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 200000 })
-    );
+    const quoteData = await quoteResponse.text();
+    console.log("✅ Got serialized transaction from PumpPortal");
     
-    // Add all SDK instructions
-    instructions.forEach(ix => tx.add(ix));
+    // Deserialize and sign transaction
+    const txBuf = Buffer.from(quoteData, 'base64');
+    const tx = VersionedTransaction.deserialize(txBuf);
+    tx.sign([TREASURY_KEYPAIR]);
     
-    tx.feePayer = TREASURY_KEYPAIR.publicKey;
-    const { blockhash } = await connection.getLatestBlockhash();
-    tx.recentBlockhash = blockhash;
-    
-    console.log("✍️ Signing and sending buy transaction...");
-    const sig = await connection.sendTransaction(tx, [TREASURY_KEYPAIR], {
+    // Send transaction
+    console.log("📤 Sending buy transaction...");
+    const sig = await connection.sendRawTransaction(tx.serialize(), {
       skipPreflight: false,
-      preflightCommitment: "confirmed",
+      preflightCommitment: 'confirmed',
+      maxRetries: 3
     });
     
     console.log(`📤 Transaction sent: ${sig.substring(0, 8)}...`);
@@ -338,7 +318,7 @@ async function buyOnPumpFun(solAmount, recipientWallet) {
     return receivedTokens;
     
   } catch (err) {
-    console.error(`❌ Pump.fun SDK buy failed: ${err.message}`);
+    console.error(`❌ Pump.fun buy failed: ${err.message}`);
     console.error(err.stack);
     throw err;
   }
@@ -456,7 +436,7 @@ async function buySUNOOnMarket(solAmount, recipientWallet) {
       // Use Jupiter
       sunoAmount = await buyOnJupiter(solAmount, recipientWallet);
     } else {
-      // Use pump.fun official SDK
+      // Use PumpPortal API
       sunoAmount = await buyOnPumpFun(solAmount, recipientWallet);
     }
     
