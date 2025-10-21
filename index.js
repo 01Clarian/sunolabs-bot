@@ -110,7 +110,7 @@ async function getActualTreasuryBalance() {
     );
     
     const balance = await connection.getTokenAccountBalance(treasuryTokenAccount);
-    const sunoBalance = Math.floor(parseFloat(balance.value.amount) / 1_000_000);
+    const sunoBalance = Math.floor(parseFloat(balance.value.uiAmount || 0));
     
     console.log(`🏦 Treasury wallet balance: ${sunoBalance.toLocaleString()} SUNO`);
     return sunoBalance;
@@ -719,8 +719,9 @@ app.post("/confirm-payment", paymentLimiter, async (req, res) => {
     let totalSUNO = 0;
     console.log("\n🪙 Starting SUNO purchase with ALL remaining SOL...");
     try {
-      totalSUNO = await buySUNOOnMarket(remainingSOL);
-      console.log(`\n✅ SUNO purchase SUCCESS: ${totalSUNO.toLocaleString()} tokens total`);
+      const rawTokenAmount = await buySUNOOnMarket(remainingSOL);
+      totalSUNO = Math.floor(rawTokenAmount / 1_000_000); // Convert from raw amount (6 decimals) to SUNO
+      console.log(`\n✅ SUNO purchase SUCCESS: ${totalSUNO.toLocaleString()} SUNO tokens`);
     } catch (err) {
       console.error(`\n❌ SUNO purchase FAILED: ${err.message}`);
       console.error(err.stack);
@@ -832,13 +833,42 @@ app.post("/confirm-payment", paymentLimiter, async (req, res) => {
           voters: []
         });
         
+        // Calculate time until voting
+        const now = Date.now();
+        let timeUntilVote = "";
+        if (cycleStartTime && phase === "submission") {
+          const submissionEndTime = cycleStartTime + (5 * 60 * 1000);
+          const timeLeft = Math.max(0, submissionEndTime - now);
+          const minutesLeft = Math.ceil(timeLeft / 60000);
+          timeUntilVote = `\n⏰ Voting starts in ${minutesLeft} minute${minutesLeft !== 1 ? 's' : ''}!`;
+        }
+        
         try {
           await bot.sendMessage(
             userId,
-            `✅ Track entered!\n\n🪙 ${userSUNO.toLocaleString()} SUNO sent!\n${tier.badge} ${tier.name} tier (${(retention * 100).toFixed(0)}% retention)\n💰 ${multiplier}x prize multiplier\n\n🎵 Your track "${payment.title}" is in the competition!\n🍀 Good luck!`
+            `✅ Track entered!\n\n🪙 ${userSUNO.toLocaleString()} SUNO sent!\n${tier.badge} ${tier.name} tier (${(retention * 100).toFixed(0)}% retention)\n💰 ${multiplier}x prize multiplier\n\n🎵 Your track "${payment.title}" is in the competition!${timeUntilVote}\n🍀 Good luck!`
           );
         } catch (e) {
           console.error("⚠️ DM error:", e.message);
+        }
+        
+        // Announce to both channels
+        try {
+          await bot.sendMessage(
+            `@${MAIN_CHANNEL}`,
+            `💰 +${roundPool.toLocaleString()} SUNO added to prize pool!\n🎵 ${payment.user} entered with "${payment.title}"\n\n💎 Current Pool: ${treasurySUNO.toLocaleString()} SUNO`
+          );
+        } catch (e) {
+          console.error("⚠️ Main channel announcement error:", e.message);
+        }
+        
+        try {
+          await bot.sendMessage(
+            `@${CHANNEL}`,
+            `💰 +${roundPool.toLocaleString()} SUNO added!\n🎵 ${payment.user} - "${payment.title}"\n\n💎 Pool: ${treasurySUNO.toLocaleString()} SUNO`
+          );
+        } catch (e) {
+          console.error("⚠️ Submissions channel announcement error:", e.message);
         }
       }
     } else {
@@ -849,13 +879,42 @@ app.post("/confirm-payment", paymentLimiter, async (req, res) => {
         votedFor: null
       });
       
+      // Calculate time until voting
+      const now = Date.now();
+      let timeUntilVote = "";
+      if (cycleStartTime && phase === "submission") {
+        const submissionEndTime = cycleStartTime + (5 * 60 * 1000);
+        const timeLeft = Math.max(0, submissionEndTime - now);
+        const minutesLeft = Math.ceil(timeLeft / 60000);
+        timeUntilVote = `\n⏰ Voting starts in ${minutesLeft} minute${minutesLeft !== 1 ? 's' : ''}!`;
+      }
+      
       try {
         await bot.sendMessage(
           userId,
-          `✅ Registered as voter!\n\n🪙 ${userSUNO.toLocaleString()} SUNO sent!\n${tier.badge} ${tier.name} tier (${(retention * 100).toFixed(0)}% retention)\n💰 ${multiplier}x prize multiplier\n\n🗳️ Vote during voting phase to earn rewards!`
+          `✅ Registered as voter!\n\n🪙 ${userSUNO.toLocaleString()} SUNO sent!\n${tier.badge} ${tier.name} tier (${(retention * 100).toFixed(0)}% retention)\n💰 ${multiplier}x prize multiplier${timeUntilVote}\n\n🗳️ Vote during voting phase to earn rewards!`
         );
       } catch (e) {
         console.error("⚠️ DM error:", e.message);
+      }
+      
+      // Announce to both channels
+      try {
+        await bot.sendMessage(
+          `@${MAIN_CHANNEL}`,
+          `💰 +${roundPool.toLocaleString()} SUNO added to prize pool!\n🗳️ New voter joined\n\n💎 Current Pool: ${treasurySUNO.toLocaleString()} SUNO`
+        );
+      } catch (e) {
+        console.error("⚠️ Main channel announcement error:", e.message);
+      }
+      
+      try {
+        await bot.sendMessage(
+          `@${CHANNEL}`,
+          `💰 +${roundPool.toLocaleString()} SUNO added!\n🗳️ Voter joined\n\n💎 Pool: ${treasurySUNO.toLocaleString()} SUNO`
+        );
+      } catch (e) {
+        console.error("⚠️ Submissions channel announcement error:", e.message);
       }
     }
 
@@ -928,6 +987,9 @@ async function startNewCycle() {
   const botUsername = process.env.BOT_USERNAME || 'sunolabs_bot';
   const treasuryBonus = calculateTreasuryBonus();
   
+  const prizePoolText = treasurySUNO === 0 && actualTreasuryBalance === 0 ? "Loading..." : `${treasurySUNO.toLocaleString()} SUNO`;
+  const bonusPrizeText = actualTreasuryBalance === 0 ? "Loading..." : `+${treasuryBonus.toLocaleString()} SUNO (1/500)`;
+  
   console.log(`🎬 NEW CYCLE: Submission phase (5 min), Round pool: ${treasurySUNO.toLocaleString()} SUNO, Bonus: ${treasuryBonus.toLocaleString()} SUNO`);
   
   try {
@@ -935,7 +997,7 @@ async function startNewCycle() {
     
     await bot.sendMessage(
       `@${MAIN_CHANNEL}`,
-      `🎬 NEW ROUND STARTED!\n\n💰 Prize Pool: ${treasurySUNO.toLocaleString()} SUNO\n🎰 Bonus Prize: +${treasuryBonus.toLocaleString()} SUNO (1/500)\n⏰ 5 minutes to join!\n\n🎮 How to Play:\n1️⃣ Open ${botMention}\n2️⃣ Type /start\n3️⃣ Choose your path:\n   🎵 Upload track & compete for prizes\n   🗳️ Vote only & earn rewards\n4️⃣ Buy SUNO tokens (0.01 SOL minimum)\n5️⃣ Win SUNO prizes! 🏆\n\n🚀 Start now!`
+      `🎬 NEW ROUND STARTED!\n\n💰 Prize Pool: ${prizePoolText}\n🎰 Bonus Prize: ${bonusPrizeText}\n⏰ 5 minutes to join!\n\n🎮 How to Play:\n1️⃣ Open ${botMention}\n2️⃣ Type /start\n3️⃣ Choose your path:\n   🎵 Upload track & compete for prizes\n   🗳️ Vote only & earn rewards\n4️⃣ Buy SUNO tokens (0.01 SOL minimum)\n5️⃣ Win SUNO prizes! 🏆\n\n🚀 Start now!`
     );
     console.log("✅ Posted cycle start to main channel");
   } catch (err) {
