@@ -138,38 +138,9 @@ function getWhaleMultiplier(amount) {
 
 // === CHECK IF TOKEN HAS BONDED ===
 async function checkIfBonded() {
-  try {
-    console.log("🔍 Checking if SUNO has graduated from pump.fun...");
-    
-    // Derive bonding curve PDA
-    const [bondingCurve] = PublicKey.findProgramAddressSync(
-      [Buffer.from("bonding-curve"), TOKEN_MINT.toBuffer()],
-      PUMP_PROGRAM
-    );
-    
-    const accountInfo = await connection.getAccountInfo(bondingCurve);
-    
-    if (!accountInfo) {
-      console.log("✅ Token has graduated to Raydium! Using Jupiter...");
-      return true; // Bonded/graduated
-    }
-    
-    // Check if bonding curve is complete
-    const data = accountInfo.data;
-    const complete = data[8]; // Byte 8 indicates completion
-    
-    if (complete === 1) {
-      console.log("✅ Bonding curve complete! Token graduated. Using Jupiter...");
-      return true;
-    }
-    
-    console.log("📊 Token still on pump.fun bonding curve. Using pump.fun buy...");
-    return false;
-    
-  } catch (err) {
-    console.error(`⚠️ Bond check error: ${err.message}. Defaulting to Jupiter...`);
-    return true; // Default to Jupiter on error
-  }
+  // ALWAYS USE JUPITER - pump.fun doesn't support buying for other wallets
+  console.log("🪐 Using Jupiter for all purchases (supports custom destination wallets)");
+  return true;
 }
 
 // === PUMP.FUN BUY ===
@@ -299,19 +270,28 @@ async function buyOnPumpFun(solAmount, recipientWallet) {
 async function buyOnJupiter(solAmount, recipientWallet) {
   try {
     console.log(`🪐 Starting Jupiter swap: ${solAmount.toFixed(4)} SOL → SUNO`);
+    console.log(`👛 Destination wallet: ${recipientWallet.substring(0, 8)}...`);
     
     const lamports = Math.floor(solAmount * 1e9);
     const recipientPubkey = new PublicKey(recipientWallet);
+    
+    // Get or create recipient's token account
     const recipientTokenAccount = await getAssociatedTokenAddress(
       TOKEN_MINT,
       recipientPubkey
     );
     
+    console.log(`📍 Destination token account: ${recipientTokenAccount.toBase58().substring(0, 8)}...`);
+    
     // Get quote from Jupiter
     console.log("📊 Getting Jupiter quote...");
     const quoteResponse = await fetch(
-      `https://quote-api.jup.ag/v6/quote?inputMint=So11111111111111111111111111111111111111112&outputMint=${TOKEN_MINT.toBase58()}&amount=${lamports}&slippageBps=100`
+      `https://quote-api.jup.ag/v6/quote?inputMint=So11111111111111111111111111111111111111112&outputMint=${TOKEN_MINT.toBase58()}&amount=${lamports}&slippageBps=500`
     );
+    
+    if (!quoteResponse.ok) {
+      throw new Error(`Jupiter quote request failed: ${quoteResponse.status} ${quoteResponse.statusText}`);
+    }
     
     const quoteData = await quoteResponse.json();
     
@@ -320,7 +300,7 @@ async function buyOnJupiter(solAmount, recipientWallet) {
     }
     
     const outAmount = parseInt(quoteData.outAmount);
-    console.log(`💎 Quote: ${lamports.toLocaleString()} lamports → ${outAmount.toLocaleString()} SUNO`);
+    console.log(`💎 Quote received: ${outAmount.toLocaleString()} SUNO (${(outAmount / 1e6).toFixed(2)}M tokens)`);
     
     // Get swap transaction
     console.log("🔨 Building swap transaction...");
@@ -333,14 +313,23 @@ async function buyOnJupiter(solAmount, recipientWallet) {
         destinationTokenAccount: recipientTokenAccount.toBase58(),
         wrapAndUnwrapSol: true,
         dynamicComputeUnitLimit: true,
-        prioritizationFeeLamports: 50000,
+        prioritizationFeeLamports: {
+          priorityLevelWithMaxLamports: {
+            maxLamports: 100000,
+            priorityLevel: "high"
+          }
+        }
       })
     });
+    
+    if (!swapResponse.ok) {
+      throw new Error(`Jupiter swap request failed: ${swapResponse.status} ${swapResponse.statusText}`);
+    }
     
     const swapData = await swapResponse.json();
     
     if (!swapData.swapTransaction) {
-      throw new Error('No swap transaction returned');
+      throw new Error('No swap transaction returned from Jupiter');
     }
     
     console.log("✍️ Signing and sending transaction...");
@@ -354,16 +343,17 @@ async function buyOnJupiter(solAmount, recipientWallet) {
     const sig = await connection.sendRawTransaction(rawTransaction, {
       skipPreflight: false,
       preflightCommitment: 'confirmed',
+      maxRetries: 3
     });
     
     console.log(`📤 Transaction sent: ${sig.substring(0, 8)}...`);
+    console.log(`🔗 https://solscan.io/tx/${sig}`);
     console.log("⏳ Confirming transaction...");
     
     await connection.confirmTransaction(sig, 'confirmed');
     
-    console.log(`✅ Jupiter swap complete! Tx: ${sig}`);
-    console.log(`🔗 https://solscan.io/tx/${sig}`);
-    console.log(`🪙 Estimated ${outAmount.toLocaleString()} SUNO tokens sent to user`);
+    console.log(`✅ Jupiter swap complete!`);
+    console.log(`🪙 Expected ${outAmount.toLocaleString()} SUNO tokens sent to ${recipientWallet.substring(0, 8)}...`);
     
     return outAmount;
     
