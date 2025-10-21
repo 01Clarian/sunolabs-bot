@@ -575,13 +575,37 @@ app.listen(PORT, async () => {
   // Load state after server is up
   loadState();
   
+  // CRITICAL: Stop any existing polling first, then wait before starting new polling
+  console.log("🧹 Cleaning up any existing bot instances...");
+  try {
+    await bot.stopPolling();
+    console.log("✅ Stopped any existing polling");
+  } catch (err) {
+    console.log("ℹ️ No existing polling to stop");
+  }
+  
+  // Wait 3 seconds to ensure old instance releases Telegram connection
+  console.log("⏳ Waiting 3 seconds for cleanup...");
+  await new Promise(resolve => setTimeout(resolve, 3000));
+  
   // NOW start polling
   try {
     await bot.startPolling();
     console.log("✅ Telegram bot polling started successfully");
   } catch (err) {
     console.error("❌ Failed to start polling:", err.message);
-    process.exit(1);
+    
+    // If it fails, wait 5 more seconds and retry once
+    console.log("🔄 Retrying in 5 seconds...");
+    await new Promise(resolve => setTimeout(resolve, 5000));
+    try {
+      await bot.startPolling();
+      console.log("✅ Telegram bot polling started on retry");
+    } catch (retryErr) {
+      console.error("❌ Retry failed:", retryErr.message);
+      console.error("💡 Manual fix: Suspend service, wait 10 seconds, then resume");
+      // Don't exit - keep web service running
+    }
   }
   
   // Start first cycle immediately if not already in progress
@@ -590,6 +614,37 @@ app.listen(PORT, async () => {
     setTimeout(() => startNewCycle(), 3000);
   } else {
     console.log(`⏳ Resuming ${phase} phase...`);
+    
+    // Recovery: Recalculate timers based on saved state
+    const now = Date.now();
+    
+    if (phase === "submission" && cycleStartTime) {
+      const elapsed = now - cycleStartTime;
+      const submissionDuration = 5 * 60 * 1000; // 5 minutes
+      
+      if (elapsed >= submissionDuration) {
+        // Submission time is over, start voting immediately
+        console.log("⚠️ Submission phase overdue, starting voting now...");
+        setTimeout(() => startVoting(), 1000);
+      } else {
+        // Schedule voting for remaining time
+        const timeLeft = submissionDuration - elapsed;
+        console.log(`⏰ Submission phase has ${Math.ceil(timeLeft / 60000)} min remaining`);
+        setTimeout(() => startVoting(), timeLeft);
+      }
+    } else if (phase === "voting" && nextPhaseTime) {
+      const timeLeft = nextPhaseTime - now;
+      
+      if (timeLeft <= 0) {
+        // Voting time is over, announce winners immediately
+        console.log("⚠️ Voting phase overdue, announcing winners now...");
+        setTimeout(() => announceWinners(), 1000);
+      } else {
+        // Schedule winner announcement for remaining time
+        console.log(`⏰ Voting phase has ${Math.ceil(timeLeft / 60000)} min remaining`);
+        setTimeout(() => announceWinners(), timeLeft);
+      }
+    }
   }
 });
 
