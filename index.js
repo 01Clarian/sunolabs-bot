@@ -147,7 +147,7 @@ app.get("/", (_, res) => {
 // === PAYMENT CONFIRMATION ===
 app.post("/confirm-payment", async (req, res) => {
   try {
-    const { signature, reference, userId, amount } = req.body;
+    const { signature, reference, userId, amount, senderWallet } = req.body;
     if (!userId || !reference) {
       console.warn("⚠️ Missing params:", req.body);
       return res.status(400).json({ error: "Missing parameters" });
@@ -160,6 +160,7 @@ app.post("/confirm-payment", async (req, res) => {
       reference, 
       amount: amountNum, 
       userKey,
+      senderWallet: senderWallet?.substring(0, 8) + "...",
       signature: signature?.substring(0, 8) + "..."
     });
 
@@ -188,6 +189,13 @@ app.post("/confirm-payment", async (req, res) => {
     const sub = submissions.find((s) => String(s.userId) === userKey);
     if (sub) {
       sub.paid = true;
+      // Store the sender's wallet address for payouts
+      if (senderWallet) {
+        sub.wallet = senderWallet;
+        console.log(`💳 Stored wallet ${senderWallet.substring(0, 8)}... for user ${userKey}`);
+      } else {
+        console.warn(`⚠️ No wallet address provided by user ${userKey}`);
+      }
       console.log(`💾 Marked submission ${userKey} as paid.`);
     } else {
       console.warn(`⚠️ No matching submission found for user ${userKey}.`);
@@ -278,9 +286,18 @@ bot.on("message", async (msg) => {
   });
   saveState();
 
+  // Calculate times for user
+  const now = new Date();
+  const nextCycle = new Date(now);
+  nextCycle.setMinutes(Math.ceil(now.getMinutes() / 5) * 5, 0, 0);
+  const votingStart = new Date(nextCycle);
+  const votingEnd = new Date(nextCycle.getTime() + 4.5 * 60 * 1000);
+  const minutesUntilVoting = Math.ceil((votingStart - now) / 60000);
+  const minutesUntilWinner = Math.ceil((votingEnd - now) / 60000);
+
   await bot.sendMessage(
     userId,
-    `🎧 Got your track!\n\n*Before it's accepted:*\n1️⃣ Send ≥ 0.01 SOL via the link below\n2️⃣ In the payment, include your Solana wallet address where you want winnings sent\n\n👉 [Pay with Solana](${redirectLink})\n\n💡 *Important:* We need your wallet address to send prizes if you win!`,
+    `🎧 Got your track!\n\n*Before it's accepted:*\nPay ≥ 0.01 SOL via the link below. Your wallet will automatically be saved for prize payouts.\n\n👉 [Pay with Solana](${redirectLink})\n\n⏰ Voting starts in ~${minutesUntilVoting} min\n🏆 Winner announced in ~${minutesUntilWinner} min`,
     { parse_mode: "Markdown", disable_web_page_preview: true }
   );
 
