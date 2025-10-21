@@ -1,18 +1,21 @@
 {
   "name": "sunolabs-bot",
-  "version": "2.0.0",
-  "main": "bot.js",
+  "version": "1.0.0",
   "type": "module",
+  "description": "SunoLabs SUNO Token Purchase & Competition Bot",
+  "main": "bot.js",
   "scripts": {
-    "start": "node bot.js"
+    "start": "node bot.js",
+    "dev": "node --watch bot.js"
   },
   "dependencies": {
-    "express": "^4.19.2",
-    "cors": "^2.8.5",
-    "node-telegram-bot-api": "^0.64.0",
-    "@solana/web3.js": "^1.95.8",
     "@solana/spl-token": "^0.4.9",
-    "bs58": "^5.0.0"
+    "@solana/web3.js": "^1.95.8",
+    "bs58": "^5.0.0",
+    "cors": "^2.8.5",
+    "express": "^4.21.2",
+    "node-fetch": "^3.3.2",
+    "node-telegram-bot-api": "^0.66.0"
   },
   "engines": {
     "node": ">=18.0.0"
