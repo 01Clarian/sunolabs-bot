@@ -293,18 +293,20 @@ async function startNewCycle() {
 
   const prizePool = potSOL * 0.5;
 
-  // Announce in BOTH channels
-  const announcement = `🎬 *New Round Started!*\n💰 Prize Pool: ${prizePool.toFixed(3)} SOL\n⏰ Submit your tracks in the next 5 minutes!\n\n📍 How to enter:\n1️⃣ Send your audio file to @${process.env.BOT_USERNAME || 'sunolabs_bot'}\n2️⃣ Pay 0.01 SOL to confirm\n3️⃣ Your wallet is automatically saved for prizes\n\n🔗 https://t.me/sunolabs`;
+  // Different announcements for each channel
+  const mainChannelMsg = `🎬 *New Competition Cycle Started!*\n💰 Prize Pool: ${prizePool.toFixed(3)} SOL\n⏰ *5 minutes to submit your track!*\n\n🎮 *How to Play:*\n1️⃣ Send your audio track to @${process.env.BOT_USERNAME || 'sunolabs_bot'}\n2️⃣ Pay 0.01 SOL to enter (your wallet auto-saved for prizes)\n3️⃣ Wait for voting round\n4️⃣ Vote for your favorites\n5️⃣ Winners get SOL prizes!\n\n🏆 *Prize Distribution:*\n• 1st Place: 35% of pool\n• 2nd Place: 25%\n• 3rd Place: 20%\n• 4th Place: 10%\n• 5th Place: 10%\n\n👉 Start here: @${process.env.BOT_USERNAME || 'sunolabs_bot'}`;
+
+  const votingChannelMsg = `🎬 *New Round Started!*\n💰 Prize Pool: ${prizePool.toFixed(3)} SOL\n⏰ Submit your tracks in the next 5 minutes!\n\n📍 Send your audio to @${process.env.BOT_USERNAME || 'sunolabs_bot'} and pay 0.01 SOL to enter!`;
 
   try {
-    await bot.sendMessage(`@${MAIN_CHANNEL}`, announcement, { parse_mode: "Markdown" });
+    await bot.sendMessage(`@${MAIN_CHANNEL}`, mainChannelMsg, { parse_mode: "Markdown" });
     console.log("✅ Posted cycle start to main channel");
   } catch (err) {
     console.error("❌ Failed to announce in main channel:", err.message);
   }
 
   try {
-    await bot.sendMessage(`@${CHANNEL}`, announcement, { parse_mode: "Markdown" });
+    await bot.sendMessage(`@${CHANNEL}`, votingChannelMsg, { parse_mode: "Markdown" });
     console.log("✅ Posted cycle start to voting channel");
   } catch (err) {
     console.error("❌ Failed to announce in voting channel:", err.message);
@@ -347,7 +349,7 @@ async function startVoting() {
   try {
     await bot.sendMessage(
       `@${MAIN_CHANNEL}`,
-      `🗳️ *Voting is Now Live!*\n💰 Prize Pool: ${prizePool.toFixed(3)} SOL\n⏰ Vote for your favorite in the next 5 minutes!\n\n👉 Go vote now: https://t.me/${CHANNEL}`,
+      `🗳️ *Voting is Now Live!*\n💰 Prize Pool: ${prizePool.toFixed(3)} SOL\n⏰ *5 minutes to vote!*\n🏆 Winners announced after voting ends\n\n👉 Go vote now: https://t.me/${CHANNEL}`,
       { parse_mode: "Markdown" }
     );
     console.log("✅ Posted voting announcement to main channel");
@@ -359,7 +361,7 @@ async function startVoting() {
   try {
     await bot.sendMessage(
       `@${CHANNEL}`,
-      `🎬 *Voting Round Started!*\n💰 Prize Pool: ${prizePool.toFixed(3)} SOL\n⏰ Voting ends in 5 minutes\n\n🔥 Vote for your favorites below!`,
+      `🎬 *Voting Round Started!*\n💰 Prize Pool: ${prizePool.toFixed(3)} SOL\n⏰ *5 minutes to vote!*\n🏆 Winners announced after voting ends\n\n🔥 Vote for your favorites below!`,
       { parse_mode: "Markdown" }
     );
     console.log("✅ Posted voting announcement to voting channel");
