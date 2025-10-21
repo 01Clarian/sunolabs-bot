@@ -1028,48 +1028,80 @@ bot.onText(/\/start|play/i, async (msg) => {
 });
 
 bot.on("message", async (msg) => {
-  // Ignore commands and non-private chats
-  if (msg.chat.type !== "private" || !msg.audio || msg.text?.startsWith('/')) return;
+  // Ignore non-private chats
+  if (msg.chat.type !== "private") return;
 
-  const user = msg.from.username ? `@${msg.from.username}` : msg.from.first_name || "Unknown";
   const userId = String(msg.from.id);
-
-  if (phase !== "submission") {
-    await bot.sendMessage(userId, `⚠️ ${phase} phase active`);
-    return;
-  }
-
-  // Check if user has chosen upload path
-  const uploadChoice = pendingPayments.find(p => p.userId === userId && p.choice === "upload" && !p.paid);
   
-  if (!uploadChoice) {
+  // Handle audio files (track uploads)
+  if (msg.audio) {
+    const user = msg.from.username ? `@${msg.from.username}` : msg.from.first_name || "Unknown";
+
+    if (phase !== "submission") {
+      await bot.sendMessage(userId, `⚠️ ${phase} phase active. Type /start when a new round begins!`);
+      return;
+    }
+
+    // Check if user has chosen upload path
+    const uploadChoice = pendingPayments.find(p => p.userId === userId && p.choice === "upload" && !p.paid);
+    
+    if (!uploadChoice) {
+      await bot.sendMessage(
+        userId,
+        `⚠️ Please type /start and choose "Upload Track" first!`
+      );
+      return;
+    }
+
+    // Save the track
+    uploadChoice.track = msg.audio.file_id;
+    uploadChoice.title = msg.audio.file_name || "Untitled";
+    uploadChoice.user = user;
+    saveState();
+
+    const reference = uploadChoice.reference;
+    const redirectLink = `https://sunolabs-redirect.onrender.com/pay?recipient=${TREASURY.toBase58()}&amount=0.01&reference=${reference}&userId=${userId}`;
+
     await bot.sendMessage(
       userId,
-      `⚠️ Please type /start and choose "Upload Track" first!`
+      `🎧 Track received!\n\n🪙 Now buy SUNO tokens to enter the competition!`,
+      {
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: "🪙 Buy SUNO & Enter Competition", url: redirectLink }]
+          ]
+        }
+      }
     );
     return;
   }
-
-  // Save the track
-  uploadChoice.track = msg.audio.file_id;
-  uploadChoice.title = msg.audio.file_name || "Untitled";
-  uploadChoice.user = user;
-  saveState();
-
-  const reference = uploadChoice.reference;
-  const redirectLink = `https://sunolabs-redirect.onrender.com/pay?recipient=${TREASURY.toBase58()}&amount=0.01&reference=${reference}&userId=${userId}`;
-
-  await bot.sendMessage(
-    userId,
-    `🎧 Track received!\n\n🪙 Now buy SUNO tokens to enter the competition!`,
-    {
-      reply_markup: {
-        inline_keyboard: [
-          [{ text: "🪙 Buy SUNO & Enter Competition", url: redirectLink }]
-        ]
-      }
+  
+  // Handle /start command (already handled above, but just in case)
+  if (msg.text?.match(/^\/start|^play$/i)) {
+    return; // Already handled by onText
+  }
+  
+  // Catch-all for any other text message
+  if (msg.text) {
+    const now = Date.now();
+    let phaseInfo = "";
+    
+    if (phase === "submission" && cycleStartTime) {
+      const submissionEndTime = cycleStartTime + (5 * 60 * 1000);
+      const timeRemaining = Math.max(0, submissionEndTime - now);
+      const minutesLeft = Math.ceil(timeRemaining / 60000);
+      phaseInfo = `\n\n⏰ Current round ends in ${minutesLeft} minute${minutesLeft !== 1 ? 's' : ''}!`;
+    } else if (phase === "voting") {
+      phaseInfo = `\n\n🗳️ Voting is currently active! Check @${CHANNEL}`;
+    } else if (phase === "cooldown") {
+      phaseInfo = `\n\n⏰ New round starting soon!`;
     }
-  );
+    
+    await bot.sendMessage(
+      userId,
+      `👋 Hi! Welcome to SunoLabs Competition!\n\n🎮 To play, type:\n/start\n\nThen choose:\n🎵 Upload track & compete for SUNO prizes\n🗳️ Vote only & earn SUNO rewards${phaseInfo}`
+    );
+  }
 });
 
 bot.on("callback_query", async (q) => {
