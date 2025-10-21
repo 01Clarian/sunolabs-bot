@@ -20,7 +20,6 @@ import {
   ASSOCIATED_TOKEN_PROGRAM_ID,
 } from "@solana/spl-token";
 import bs58 from "bs58";
-import { PumpFunSDK } from "pumpdotfun-sdk";
 
 // === TELEGRAM CONFIG ===
 const token = process.env.BOT_TOKEN;
@@ -234,7 +233,7 @@ async function checkIfBonded() {
       return true;
     }
     
-    console.log("📊 Token still on pump.fun bonding curve. Using pump.fun SDK...");
+    console.log("📊 Token still on pump.fun bonding curve. Using pump.fun direct buy...");
     return false;
     
   } catch (err) {
@@ -243,18 +242,30 @@ async function checkIfBonded() {
   }
 }
 
-// === PUMP.FUN BUY (Using SDK) ===
+// === PUMP.FUN BUY (Direct Implementation) ===
 async function buyOnPumpFun(solAmount, recipientWallet) {
   try {
-    console.log(`🚀 Starting pump.fun buy with SDK: ${solAmount.toFixed(4)} SOL`);
+    console.log(`🚀 Starting pump.fun buy: ${solAmount.toFixed(4)} SOL`);
     console.log(`📍 Will buy to treasury then transfer to: ${recipientWallet.substring(0, 8)}...`);
     
     const lamports = Math.floor(solAmount * 1e9);
     console.log(`💰 Buy amount: ${lamports.toLocaleString()} lamports`);
     
-    // Initialize SDK
-    console.log("🔧 Initializing PumpFun SDK...");
-    const sdk = new PumpFunSDK(connection, TREASURY_KEYPAIR);
+    // Derive bonding curve PDA
+    const [bondingCurve] = PublicKey.findProgramAddressSync(
+      [Buffer.from("bonding-curve"), TOKEN_MINT.toBuffer()],
+      PUMP_PROGRAM
+    );
+    
+    // Derive associated bonding curve PDA
+    const [associatedBondingCurve] = PublicKey.findProgramAddressSync(
+      [
+        bondingCurve.toBuffer(),
+        TOKEN_PROGRAM_ID.toBuffer(),
+        TOKEN_MINT.toBuffer()
+      ],
+      ASSOCIATED_TOKEN_PROGRAM_ID
+    );
     
     // Get treasury token account
     const treasuryTokenAccount = await getAssociatedTokenAddress(
@@ -262,19 +273,70 @@ async function buyOnPumpFun(solAmount, recipientWallet) {
       TREASURY_KEYPAIR.publicKey
     );
     
-    // Buy tokens using SDK
-    console.log("✍️ Creating buy transaction with SDK...");
-    const buyTx = await sdk.buy(
-      TOKEN_MINT,
-      lamports,
-      {
-        slippageBps: 500, // 5% slippage
-        commitment: 'confirmed',
-      }
+    // Check if treasury ATA exists
+    const treasuryATA = await connection.getAccountInfo(treasuryTokenAccount);
+    
+    console.log("🔨 Building pump.fun buy instruction...");
+    
+    const tx = new Transaction();
+    
+    // Create treasury ATA if needed
+    if (!treasuryATA) {
+      console.log("📝 Creating treasury token account...");
+      tx.add(
+        createAssociatedTokenAccountInstruction(
+          TREASURY_KEYPAIR.publicKey,
+          treasuryTokenAccount,
+          TREASURY_KEYPAIR.publicKey,
+          TOKEN_MINT
+        )
+      );
+    }
+    
+    // Add compute budget
+    tx.add(
+      ComputeBudgetProgram.setComputeUnitLimit({ units: 100000 }),
+      ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 200000 })
     );
     
-    console.log(`📤 Sending buy transaction...`);
-    const sig = await connection.sendTransaction(buyTx, [TREASURY_KEYPAIR], {
+    // Build buy instruction data
+    // Discriminator for buy: [102, 6, 61, 18, 1, 218, 235, 234]
+    const buyDiscriminator = Buffer.from([102, 6, 61, 18, 1, 218, 235, 234]);
+    const amountBuffer = Buffer.alloc(8);
+    amountBuffer.writeBigUInt64LE(BigInt(lamports));
+    const maxSolCostBuffer = Buffer.alloc(8);
+    maxSolCostBuffer.writeBigUInt64LE(BigInt(Math.floor(lamports * 1.1))); // 10% slippage
+    
+    const data = Buffer.concat([buyDiscriminator, amountBuffer, maxSolCostBuffer]);
+    
+    // Build accounts array
+    const keys = [
+      { pubkey: PUMP_GLOBAL, isSigner: false, isWritable: false },
+      { pubkey: PUMP_FEE, isSigner: false, isWritable: true },
+      { pubkey: TOKEN_MINT, isSigner: false, isWritable: false },
+      { pubkey: bondingCurve, isSigner: false, isWritable: true },
+      { pubkey: associatedBondingCurve, isSigner: false, isWritable: true },
+      { pubkey: treasuryTokenAccount, isSigner: false, isWritable: true },
+      { pubkey: TREASURY_KEYPAIR.publicKey, isSigner: true, isWritable: true },
+      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+      { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
+      { pubkey: new PublicKey("SysvarRent111111111111111111111111111111111"), isSigner: false, isWritable: false },
+      { pubkey: PUMP_EVENT_AUTHORITY, isSigner: false, isWritable: false },
+      { pubkey: PUMP_PROGRAM, isSigner: false, isWritable: false },
+    ];
+    
+    tx.add({
+      keys,
+      programId: PUMP_PROGRAM,
+      data,
+    });
+    
+    tx.feePayer = TREASURY_KEYPAIR.publicKey;
+    const { blockhash } = await connection.getLatestBlockhash();
+    tx.recentBlockhash = blockhash;
+    
+    console.log("✍️ Signing and sending buy transaction...");
+    const sig = await connection.sendTransaction(tx, [TREASURY_KEYPAIR], {
       skipPreflight: false,
       preflightCommitment: "confirmed",
     });
@@ -310,7 +372,7 @@ async function buyOnPumpFun(solAmount, recipientWallet) {
     return tokenAmount;
     
   } catch (err) {
-    console.error(`❌ Pump.fun SDK buy failed: ${err.message}`);
+    console.error(`❌ Pump.fun buy failed: ${err.message}`);
     console.error(err.stack);
     throw err;
   }
