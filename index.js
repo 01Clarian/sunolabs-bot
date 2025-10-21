@@ -65,7 +65,7 @@ if (!TREASURY_PRIVATE_KEY) throw new Error("❌ BOT_PRIVATE_KEY missing!");
 const TREASURY_KEYPAIR = Keypair.fromSecretKey(TREASURY_PRIVATE_KEY);
 
 // === STATE ===
-let treasurySOL = 0;
+let treasurySUNO = 0;  // Competition pool in SUNO tokens
 let transFeeCollected = 0;
 let pendingPayments = [];
 let participants = [];
@@ -238,10 +238,10 @@ async function checkIfBonded() {
 }
 
 // === PUMP.FUN BUY (Using PumpPortal API) ===
-async function buyOnPumpFun(solAmount, recipientWallet) {
+async function buyOnPumpFun(solAmount) {
   try {
     console.log(`🚀 Starting pump.fun buy with PumpPortal API: ${solAmount.toFixed(4)} SOL`);
-    console.log(`📍 Buying directly to: ${recipientWallet.substring(0, 8)}...`);
+    console.log(`📍 Buying to treasury, will split SUNO after...`);
     
     // Get transaction from PumpPortal
     console.log("📊 Getting PumpPortal transaction...");
@@ -305,18 +305,7 @@ async function buyOnPumpFun(solAmount, recipientWallet) {
     const balance = await connection.getTokenAccountBalance(treasuryTokenAccount);
     const receivedTokens = parseInt(balance.value.amount);
     
-    console.log(`🪙 Treasury received ${receivedTokens.toLocaleString()} SUNO tokens`);
-    
-    // Transfer to recipient
-    console.log(`\n📤 Transferring ${receivedTokens.toLocaleString()} SUNO to recipient...`);
-    const transferSuccess = await transferTokensToRecipient(receivedTokens, recipientWallet);
-    
-    if (!transferSuccess) {
-      console.error("❌ Transfer failed - tokens stuck in treasury!");
-      throw new Error("Failed to transfer tokens to recipient");
-    }
-    
-    console.log(`✅ Transfer complete! ${receivedTokens.toLocaleString()} SUNO → ${recipientWallet.substring(0, 8)}...`);
+    console.log(`🪙 Treasury received ${receivedTokens.toLocaleString()} SUNO tokens (will split next)`);
     
     return receivedTokens;
     
@@ -328,21 +317,20 @@ async function buyOnPumpFun(solAmount, recipientWallet) {
 }
 
 // === JUPITER SWAP ===
-async function buyOnJupiter(solAmount, recipientWallet) {
+async function buyOnJupiter(solAmount) {
   try {
     console.log(`🪐 Starting Jupiter swap: ${solAmount.toFixed(4)} SOL → SUNO`);
-    console.log(`👛 Destination wallet: ${recipientWallet.substring(0, 8)}...`);
+    console.log(`📍 Buying to treasury, will split SUNO after...`);
     
     const lamports = Math.floor(solAmount * 1e9);
-    const recipientPubkey = new PublicKey(recipientWallet);
     
-    // Get or create recipient's token account
-    const recipientTokenAccount = await getAssociatedTokenAddress(
+    // Get treasury's token account (where tokens will go)
+    const treasuryTokenAccount = await getAssociatedTokenAddress(
       TOKEN_MINT,
-      recipientPubkey
+      TREASURY_KEYPAIR.publicKey
     );
     
-    console.log(`📍 Destination token account: ${recipientTokenAccount.toBase58().substring(0, 8)}...`);
+    console.log(`📍 Treasury token account: ${treasuryTokenAccount.toBase58().substring(0, 8)}...`);
     
     // Get quote from Jupiter
     console.log("📊 Getting Jupiter quote...");
@@ -363,7 +351,7 @@ async function buyOnJupiter(solAmount, recipientWallet) {
     const outAmount = parseInt(quoteData.outAmount);
     console.log(`💎 Quote received: ${outAmount.toLocaleString()} SUNO (${(outAmount / 1e6).toFixed(2)}M tokens)`);
     
-    // Get swap transaction
+    // Get swap transaction (to treasury's token account)
     console.log("🔨 Building swap transaction...");
     const swapResponse = await fetch('https://quote-api.jup.ag/v6/swap', {
       method: 'POST',
@@ -371,7 +359,7 @@ async function buyOnJupiter(solAmount, recipientWallet) {
       body: JSON.stringify({
         quoteResponse: quoteData,
         userPublicKey: TREASURY_KEYPAIR.publicKey.toBase58(),
-        destinationTokenAccount: recipientTokenAccount.toBase58(),
+        destinationTokenAccount: treasuryTokenAccount.toBase58(),
         wrapAndUnwrapSol: true,
         dynamicComputeUnitLimit: true,
         prioritizationFeeLamports: {
@@ -414,7 +402,7 @@ async function buyOnJupiter(solAmount, recipientWallet) {
     await connection.confirmTransaction(sig, 'confirmed');
     
     console.log(`✅ Jupiter swap complete!`);
-    console.log(`🪙 Expected ${outAmount.toLocaleString()} SUNO tokens sent to ${recipientWallet.substring(0, 8)}...`);
+    console.log(`🪙 Treasury received ~${outAmount.toLocaleString()} SUNO tokens (will split next)`);
     
     return outAmount;
     
@@ -426,11 +414,11 @@ async function buyOnJupiter(solAmount, recipientWallet) {
 }
 
 // === MARKET INTEGRATION (Auto-detect pump.fun or Jupiter) ===
-async function buySUNOOnMarket(solAmount, recipientWallet) {
+async function buySUNOOnMarket(solAmount) {
   try {
     console.log(`\n🔄 ========== BUYING SUNO ==========`);
     console.log(`💰 Amount: ${solAmount.toFixed(4)} SOL`);
-    console.log(`👛 Recipient: ${recipientWallet.substring(0, 8)}...`);
+    console.log(`📍 Buying to treasury (will split after)`);
     
     const isBonded = await checkIfBonded();
     
@@ -438,20 +426,20 @@ async function buySUNOOnMarket(solAmount, recipientWallet) {
     if (isBonded) {
       // Use Jupiter
       console.log("📊 Using Jupiter (token graduated)...");
-      sunoAmount = await buyOnJupiter(solAmount, recipientWallet);
+      sunoAmount = await buyOnJupiter(solAmount);
     } else {
       // Try pump.fun, fallback to Jupiter if it fails
       console.log("📊 Trying PumpPortal (token on bonding curve)...");
       try {
-        sunoAmount = await buyOnPumpFun(solAmount, recipientWallet);
+        sunoAmount = await buyOnPumpFun(solAmount);
       } catch (pumpError) {
         console.error(`⚠️ PumpPortal failed: ${pumpError.message}`);
         console.log("🔄 Falling back to Jupiter...");
-        sunoAmount = await buyOnJupiter(solAmount, recipientWallet);
+        sunoAmount = await buyOnJupiter(solAmount);
       }
     }
     
-    console.log(`✅ Purchase complete! ${sunoAmount.toLocaleString()} SUNO → ${recipientWallet.substring(0, 8)}...`);
+    console.log(`✅ Purchase complete! ${sunoAmount.toLocaleString()} SUNO now in treasury`);
     console.log(`🔄 ===================================\n`);
     return sunoAmount;
     
@@ -477,7 +465,7 @@ function saveState() {
         phase,
         cycleStartTime,
         nextPhaseTime,
-        treasurySOL,
+        treasurySUNO,
         transFeeCollected,
         pendingPayments
       }, null, 2)
@@ -496,7 +484,7 @@ function loadState() {
     phase = d.phase || "submission";
     cycleStartTime = d.cycleStartTime || null;
     nextPhaseTime = d.nextPhaseTime || null;
-    treasurySOL = d.treasurySOL || 0;
+    treasurySUNO = d.treasurySUNO || 0;
     transFeeCollected = d.transFeeCollected || 0;
     pendingPayments = d.pendingPayments || [];
     console.log(`📂 State restored — ${participants.length} participants, phase: ${phase}`);
@@ -521,7 +509,7 @@ app.get("/", async (_, res) => {
     phase,
     uploaders,
     voteOnly,
-    treasury: treasurySOL.toFixed(4) + " SOL",
+    treasury: treasurySUNO.toLocaleString() + " SUNO",
     transFees: transFeeCollected.toFixed(4) + " SOL",
     uptime: process.uptime()
   });
@@ -580,7 +568,7 @@ app.post("/confirm-payment", async (req, res) => {
     // === PAYMENT SPLIT ===
     console.log("💰 Calculating payment split...");
     const transFee = amountNum * 0.10;
-    const remaining = amountNum * 0.90;
+    const remainingSOL = amountNum * 0.90;
     
     const tier = getTier(amountNum);
     let retention = tier.retention;
@@ -591,13 +579,12 @@ app.post("/confirm-payment", async (req, res) => {
       multiplier = getWhaleMultiplier(amountNum);
     }
     
-    const userAmount = remaining * retention;
-    const treasuryAmount = remaining * (1 - retention);
-    
     console.log(`\n💰 ========== PAYMENT SPLIT ==========`);
-    console.log(`🏦 Trans Fee (10%): ${transFee.toFixed(4)} SOL`);
-    console.log(`👤 User SUNO Buy (${(retention * 100).toFixed(0)}%): ${userAmount.toFixed(4)} SOL`);
-    console.log(`🏆 Competition Pool: ${treasuryAmount.toFixed(4)} SOL`);
+    console.log(`🏦 Trans Fee (10%): ${transFee.toFixed(4)} SOL → Fee wallet`);
+    console.log(`💎 Buy SUNO with: ${remainingSOL.toFixed(4)} SOL`);
+    console.log(`📊 Then split SUNO tokens:`);
+    console.log(`   👤 User gets: ${(retention * 100).toFixed(0)}% of SUNO`);
+    console.log(`   🏆 Competition pool: ${((1 - retention) * 100).toFixed(0)}% of SUNO`);
     console.log(`${tier.badge} Tier: ${tier.name} | ${multiplier}x multiplier`);
     console.log(`=====================================\n`);
 
@@ -611,19 +598,19 @@ app.post("/confirm-payment", async (req, res) => {
       console.error(`❌ Trans fee failed: ${err.message}`);
     }
 
-    // === BUY SUNO FOR USER ===
-    let sunoAmount = 0;
-    console.log("\n🪙 Starting SUNO purchase...");
+    // === BUY SUNO WITH ALL REMAINING SOL ===
+    let totalSUNO = 0;
+    console.log("\n🪙 Starting SUNO purchase with ALL remaining SOL...");
     try {
-      sunoAmount = await buySUNOOnMarket(userAmount, senderWallet);
-      console.log(`\n✅ SUNO purchase SUCCESS: ${sunoAmount.toLocaleString()} tokens`);
+      totalSUNO = await buySUNOOnMarket(remainingSOL);
+      console.log(`\n✅ SUNO purchase SUCCESS: ${totalSUNO.toLocaleString()} tokens total`);
     } catch (err) {
       console.error(`\n❌ SUNO purchase FAILED: ${err.message}`);
       console.error(err.stack);
     }
 
     // === CHECK IF PURCHASE WAS SUCCESSFUL ===
-    if (sunoAmount === 0 || !sunoAmount) {
+    if (totalSUNO === 0 || !totalSUNO) {
       console.log("⚠️ SUNO purchase returned 0 tokens - notifying user of failure");
       
       try {
@@ -639,16 +626,43 @@ app.post("/confirm-payment", async (req, res) => {
       return res.json({ ok: false, error: "SUNO purchase failed", sunoAmount: 0 });
     }
 
-    // === ADD TO TREASURY ===
-    treasurySOL += treasuryAmount;
-    console.log(`\n🏦 Treasury updated: +${treasuryAmount.toFixed(4)} SOL (Total: ${treasurySOL.toFixed(4)} SOL)`);
+    // === SPLIT SUNO TOKENS ===
+    const userSUNO = Math.floor(totalSUNO * retention);
+    const competitionSUNO = totalSUNO - userSUNO;
+    
+    console.log(`\n💎 ========== SUNO TOKEN SPLIT ==========`);
+    console.log(`🪙 Total SUNO bought: ${totalSUNO.toLocaleString()}`);
+    console.log(`👤 User gets: ${userSUNO.toLocaleString()} SUNO (${(retention * 100).toFixed(0)}%)`);
+    console.log(`🏆 Competition pool: ${competitionSUNO.toLocaleString()} SUNO (${((1 - retention) * 100).toFixed(0)}%)`);
+    console.log(`========================================\n`);
+
+    // === TRANSFER USER'S PORTION ===
+    console.log(`📤 Transferring ${userSUNO.toLocaleString()} SUNO to user...`);
+    const transferSuccess = await transferTokensToRecipient(userSUNO, senderWallet);
+    
+    if (!transferSuccess) {
+      console.error("❌ Transfer failed!");
+      try {
+        await bot.sendMessage(
+          userId,
+          `❌ Transfer Failed!\n\n⚠️ SUNO purchase succeeded but transfer to your wallet failed.\n\nPlease contact support.`
+        );
+      } catch (e) {}
+      return res.json({ ok: false, error: "Transfer failed", sunoAmount: 0 });
+    }
+
+    console.log(`✅ ${userSUNO.toLocaleString()} SUNO → ${senderWallet.substring(0, 8)}...`);
+
+    // === ADD COMPETITION POOL TO TREASURY ===
+    treasurySUNO += competitionSUNO;
+    console.log(`\n🏦 Treasury updated: +${competitionSUNO.toLocaleString()} SUNO (Total: ${treasurySUNO.toLocaleString()} SUNO)`);
 
     // === SAVE USER DATA ===
     const userData = {
       userId: userKey,
       wallet: senderWallet,
       amount: amountNum,
-      sunoReceived: sunoAmount,
+      sunoReceived: userSUNO,
       tier: tier.name,
       tierBadge: tier.badge,
       retention: (retention * 100).toFixed(0) + "%",
@@ -674,7 +688,7 @@ app.post("/confirm-payment", async (req, res) => {
     try {
       await bot.sendMessage(
         userId,
-        `✅ Purchase complete!\n\n🪙 ${sunoAmount.toLocaleString()} SUNO bought & sent!\n${tier.badge} ${tier.name} tier (${(retention * 100).toFixed(0)}% retention)\n💰 ${multiplier}x prize multiplier${timeMessage}\n\n🎯 What do you want to do?`,
+        `✅ Purchase complete!\n\n🪙 ${userSUNO.toLocaleString()} SUNO bought & sent!\n${tier.badge} ${tier.name} tier (${(retention * 100).toFixed(0)}% retention)\n💰 ${multiplier}x prize multiplier${timeMessage}\n\n🎯 What do you want to do?`,
         {
           reply_markup: {
             inline_keyboard: [
@@ -693,7 +707,7 @@ app.post("/confirm-payment", async (req, res) => {
     }
 
     console.log("✅ Payment processing complete - returning success to client\n");
-    res.json({ ok: true, sunoAmount });
+    res.json({ ok: true, sunoAmount: userSUNO });
   } catch (err) {
     console.error(`\n💥 FATAL ERROR in confirm-payment: ${err.message}`);
     console.error(err.stack);
@@ -701,7 +715,7 @@ app.post("/confirm-payment", async (req, res) => {
   }
 });
 
-// === SOL PAYOUT ===
+// === SOL PAYOUT (for trans fees) ===
 async function sendSOLPayout(destination, amountSOL, reason = "payout") {
   try {
     const lamports = Math.floor(amountSOL * 1e9);
@@ -725,6 +739,22 @@ async function sendSOLPayout(destination, amountSOL, reason = "payout") {
   }
 }
 
+// === SUNO TOKEN PAYOUT ===
+async function sendSUNOPayout(destination, amountSUNO, reason = "payout") {
+  try {
+    console.log(`💸 ${reason}: ${amountSUNO.toLocaleString()} SUNO → ${destination.substring(0, 8)}...`);
+    
+    const success = await transferTokensToRecipient(amountSUNO, destination);
+    
+    if (!success) {
+      console.error(`⚠️ ${reason} failed!`);
+    }
+    
+  } catch (err) {
+    console.error(`⚠️ ${reason} failed: ${err.message}`);
+  }
+}
+
 // === START NEW CYCLE ===
 async function startNewCycle() {
   console.log("🔄 Starting new cycle...");
@@ -736,14 +766,14 @@ async function startNewCycle() {
 
   const botUsername = process.env.BOT_USERNAME || 'sunolabs_bot';
   
-  console.log(`🎬 NEW CYCLE: Submission phase (5 min), Prize pool: ${treasurySOL.toFixed(3)} SOL`);
+  console.log(`🎬 NEW CYCLE: Submission phase (5 min), Prize pool: ${treasurySUNO.toLocaleString()} SUNO`);
   
   try {
     const botMention = botUsername.startsWith('@') ? botUsername : `@${botUsername}`;
     
     await bot.sendMessage(
       `@${MAIN_CHANNEL}`,
-      `🎬 NEW ROUND STARTED!\n\n💰 Prize Pool: ${treasurySOL.toFixed(3)} SOL\n⏰ 5 minutes to join!\n\n🎮 Buy SUNO + Choose:\n• Upload track & compete\n• Vote only & earn\n\nStart: ${botMention}`
+      `🎬 NEW ROUND STARTED!\n\n💰 Prize Pool: ${treasurySUNO.toLocaleString()} SUNO\n⏰ 5 minutes to join!\n\n🎮 Buy SUNO + Choose:\n• Upload track & compete\n• Vote only & earn\n\nStart: ${botMention}`
     );
     console.log("✅ Posted cycle start to main channel");
   } catch (err) {
@@ -782,14 +812,14 @@ async function startVoting() {
   try {
     await bot.sendMessage(
       `@${MAIN_CHANNEL}`,
-      `🗳️ VOTING LIVE!\n💰 Prize: ${treasurySOL.toFixed(3)} SOL\n⏰ 5 min!\n\n📍 Vote: https://t.me/${CHANNEL}`
+      `🗳️ VOTING LIVE!\n💰 Prize: ${treasurySUNO.toLocaleString()} SUNO\n⏰ 5 min!\n\n📍 Vote: https://t.me/${CHANNEL}`
     );
   } catch {}
 
   try {
     await bot.sendMessage(
       `@${CHANNEL}`,
-      `🗳️ VOTING STARTED!\n💰 ${treasurySOL.toFixed(3)} SOL\n⏰ 5 min!\n\n🔥 Vote below!`
+      `🗳️ VOTING STARTED!\n💰 ${treasurySUNO.toLocaleString()} SUNO\n⏰ 5 min!\n\n🔥 Vote below!`
     );
 
     for (const p of uploaders) {
@@ -822,7 +852,7 @@ async function announceWinners() {
     console.log("🚫 No uploads");
     participants = [];
     voters = [];
-    treasurySOL = 0;
+    treasurySUNO = 0;
     pendingPayments = [];
     saveState();
     setTimeout(() => startNewCycle(), 60 * 1000);
@@ -833,23 +863,23 @@ async function announceWinners() {
   const weights = [0.40, 0.25, 0.20, 0.10, 0.05];
   const numWinners = Math.min(5, sorted.length);
   
-  const prizePool = treasurySOL * 0.80;
-  const voterPool = treasurySOL * 0.20;
+  const prizePool = Math.floor(treasurySUNO * 0.80);
+  const voterPool = treasurySUNO - prizePool;
   
-  let resultsMsg = `🏆 Competition Results 🏆\n💰 Prize Pool: ${prizePool.toFixed(3)} SOL\n\n`;
+  let resultsMsg = `🏆 Competition Results 🏆\n💰 Prize Pool: ${prizePool.toLocaleString()} SUNO\n\n`;
   
   for (let i = 0; i < numWinners; i++) {
     const w = sorted[i];
-    const baseAmt = prizePool * weights[i];
-    const finalAmt = baseAmt * w.multiplier;
+    const baseAmt = Math.floor(prizePool * weights[i]);
+    const finalAmt = Math.floor(baseAmt * w.multiplier);
     
-    resultsMsg += `#${i + 1} ${w.tierBadge} ${w.user} — ${w.votes}🔥 — ${finalAmt.toFixed(3)} SOL\n`;
+    resultsMsg += `#${i + 1} ${w.tierBadge} ${w.user} — ${w.votes}🔥 — ${finalAmt.toLocaleString()} SUNO\n`;
     
-    if (w.wallet && finalAmt > 0.000001) {
-      await sendSOLPayout(w.wallet, finalAmt, `Prize #${i + 1}`);
+    if (w.wallet && finalAmt > 0) {
+      await sendSUNOPayout(w.wallet, finalAmt, `Prize #${i + 1}`);
       
       try {
-        await bot.sendMessage(w.userId, `🎉 You won ${finalAmt.toFixed(3)} SOL! Check your wallet! 🎊`);
+        await bot.sendMessage(w.userId, `🎉 You won ${finalAmt.toLocaleString()} SUNO! Check your wallet! 🎊`);
       } catch {}
     }
   }
@@ -860,16 +890,16 @@ async function announceWinners() {
   if (winnerVoters.length > 0 && voterPool > 0) {
     const totalVoterAmount = winnerVoters.reduce((sum, v) => sum + v.amount, 0);
     
-    resultsMsg += `\n🗳️ Voter Rewards: ${voterPool.toFixed(4)} SOL\n`;
+    resultsMsg += `\n🗳️ Voter Rewards: ${voterPool.toLocaleString()} SUNO\n`;
     
     for (const v of winnerVoters) {
-      const share = (v.amount / totalVoterAmount) * voterPool;
+      const share = Math.floor((v.amount / totalVoterAmount) * voterPool);
       
-      if (share > 0.000001) {
-        await sendSOLPayout(v.wallet, share, "Voter reward");
+      if (share > 0) {
+        await sendSUNOPayout(v.wallet, share, "Voter reward");
         
         try {
-          await bot.sendMessage(v.userId, `🎉 You voted for the winner!\nReward: ${share.toFixed(4)} SOL 💰`);
+          await bot.sendMessage(v.userId, `🎉 You voted for the winner!\nReward: ${share.toLocaleString()} SUNO 💰`);
         } catch {}
       }
     }
@@ -881,14 +911,14 @@ async function announceWinners() {
     await bot.sendMessage(`@${CHANNEL}`, resultsMsg);
     await bot.sendMessage(
       `@${MAIN_CHANNEL}`,
-      `🎉 WINNER: ${winner.tierBadge} ${winner.user}\n💰 ${(prizePool * 0.40 * winner.multiplier).toFixed(3)} SOL\n\n⏰ New round in 1 min`
+      `🎉 WINNER: ${winner.tierBadge} ${winner.user}\n💰 ${Math.floor(prizePool * 0.40 * winner.multiplier).toLocaleString()} SUNO\n\n⏰ New round in 1 min`
     );
   } catch {}
 
-  console.log(`💰 Distributed ${treasurySOL.toFixed(3)} SOL`);
+  console.log(`💰 Distributed ${treasurySUNO.toLocaleString()} SUNO`);
   participants = [];
   voters = [];
-  treasurySOL = 0;
+  treasurySUNO = 0;
   pendingPayments = [];
   saveState();
   
