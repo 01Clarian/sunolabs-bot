@@ -671,40 +671,73 @@ app.post("/confirm-payment", async (req, res) => {
       timestamp: Date.now()
     };
 
-    saveState();
+    // === REGISTER USER BASED ON PRE-SELECTED CHOICE ===
+    const payment = pendingPayments.find(p => p.reference === reference);
+    const userChoice = payment?.choice || "vote"; // Default to vote if somehow missing
 
-    // === SEND CHOICE BUTTONS ===
-    const now = Date.now();
-    let timeMessage = "";
-    
-    if (phase === "submission" && cycleStartTime) {
-      const submissionEndTime = cycleStartTime + (5 * 60 * 1000);
-      const timeRemaining = Math.max(0, submissionEndTime - now);
-      const minutesLeft = Math.ceil(timeRemaining / 60000);
-      timeMessage = `\n⏰ Voting starts in ~${minutesLeft} minute${minutesLeft !== 1 ? 's' : ''}`;
-    }
-
-    console.log("\n📱 Sending choice buttons to user...");
-    try {
-      await bot.sendMessage(
-        userId,
-        `✅ Purchase complete!\n\n🪙 ${userSUNO.toLocaleString()} SUNO bought & sent!\n${tier.badge} ${tier.name} tier (${(retention * 100).toFixed(0)}% retention)\n💰 ${multiplier}x prize multiplier${timeMessage}\n\n🎯 What do you want to do?`,
-        {
-          reply_markup: {
-            inline_keyboard: [
-              [{ text: "🎵 Upload Track & Compete", callback_data: `choice_upload_${userKey}` }],
-              [{ text: "🗳️ Vote Only & Earn", callback_data: `choice_vote_${userKey}` }]
-            ]
-          }
+    if (userChoice === "upload") {
+      // Register as competitor
+      if (!payment.track) {
+        console.log("⚠️ User chose upload but didn't send audio - defaulting to vote");
+        voters.push({
+          ...userData,
+          choice: "vote",
+          votedFor: null
+        });
+        
+        try {
+          await bot.sendMessage(
+            userId,
+            `✅ Payment complete!\n\n🪙 ${userSUNO.toLocaleString()} SUNO sent!\n${tier.badge} ${tier.name} tier (${(retention * 100).toFixed(0)}% retention)\n💰 ${multiplier}x prize multiplier\n\n⚠️ No audio found - registered as voter.\n🗳️ Vote during voting phase to earn rewards!`
+          );
+        } catch (e) {
+          console.error("⚠️ DM error:", e.message);
         }
-      );
+      } else {
+        participants.push({
+          ...userData,
+          choice: "upload",
+          user: payment.user,
+          track: payment.track,
+          title: payment.title,
+          votes: 0,
+          voters: []
+        });
+        
+        try {
+          await bot.sendMessage(
+            userId,
+            `✅ Track entered!\n\n🪙 ${userSUNO.toLocaleString()} SUNO sent!\n${tier.badge} ${tier.name} tier (${(retention * 100).toFixed(0)}% retention)\n💰 ${multiplier}x prize multiplier\n\n🎵 Your track "${payment.title}" is in the competition!\n🍀 Good luck!`
+          );
+        } catch (e) {
+          console.error("⚠️ DM error:", e.message);
+        }
+      }
+    } else {
+      // Register as voter
+      voters.push({
+        ...userData,
+        choice: "vote",
+        votedFor: null
+      });
       
-      pendingPayments.find(p => p.reference === reference).userData = userData;
-      console.log("✅ Choice buttons sent successfully\n");
-      
-    } catch (e) {
-      console.error("⚠️ DM error:", e.message);
+      try {
+        await bot.sendMessage(
+          userId,
+          `✅ Registered as voter!\n\n🪙 ${userSUNO.toLocaleString()} SUNO sent!\n${tier.badge} ${tier.name} tier (${(retention * 100).toFixed(0)}% retention)\n💰 ${multiplier}x prize multiplier\n\n🗳️ Vote during voting phase to earn rewards!`
+        );
+      } catch (e) {
+        console.error("⚠️ DM error:", e.message);
+      }
     }
+
+    // Mark as paid
+    if (payment) {
+      payment.paid = true;
+      payment.userData = userData;
+    }
+
+    saveState();
 
     console.log("✅ Payment processing complete - returning success to client\n");
     res.json({ ok: true, sunoAmount: userSUNO });
@@ -773,7 +806,7 @@ async function startNewCycle() {
     
     await bot.sendMessage(
       `@${MAIN_CHANNEL}`,
-      `🎬 NEW ROUND STARTED!\n\n💰 Prize Pool: ${treasurySUNO.toLocaleString()} SUNO\n⏰ 5 minutes to join!\n\n🎮 Buy SUNO + Choose:\n• Upload track & compete\n• Vote only & earn\n\nStart: ${botMention}`
+      `🎬 NEW ROUND STARTED!\n\n💰 Prize Pool: ${treasurySUNO.toLocaleString()} SUNO\n⏰ 5 minutes to join!\n\n🎮 How to Play:\n1️⃣ Open ${botMention}\n2️⃣ Type /start\n3️⃣ Choose your path:\n   🎵 Upload track & compete for prizes\n   🗳️ Vote only & earn rewards\n4️⃣ Buy SUNO tokens (0.01 SOL minimum)\n5️⃣ Win SUNO prizes! 🏆\n\n🚀 Start now!`
     );
     console.log("✅ Posted cycle start to main channel");
   } catch (err) {
@@ -812,14 +845,14 @@ async function startVoting() {
   try {
     await bot.sendMessage(
       `@${MAIN_CHANNEL}`,
-      `🗳️ VOTING LIVE!\n💰 Prize: ${treasurySUNO.toLocaleString()} SUNO\n⏰ 5 min!\n\n📍 Vote: https://t.me/${CHANNEL}`
+      `🗳️ VOTING STARTED!\n\n💰 Prize Pool: ${treasurySUNO.toLocaleString()} SUNO\n⏰ 5 minutes to vote!\n\n🔥 Listen to tracks & vote for your favorite!\n📍 Vote here: https://t.me/${CHANNEL}\n\n🏆 Winners get 80% of prize pool\n💰 Voters who pick the winner share 20%!`
     );
   } catch {}
 
   try {
     await bot.sendMessage(
       `@${CHANNEL}`,
-      `🗳️ VOTING STARTED!\n💰 ${treasurySUNO.toLocaleString()} SUNO\n⏰ 5 min!\n\n🔥 Vote below!`
+      `🗳️ VOTING STARTED!\n\n💰 Prize Pool: ${treasurySUNO.toLocaleString()} SUNO\n⏰ 5 minutes to vote!\n\n🎵 Listen to each track below\n🔥 Vote for your favorite!\n\n🏆 Top 5 tracks win prizes\n💎 Vote for the winner = earn rewards!`
     );
 
     for (const p of uploaders) {
@@ -911,7 +944,7 @@ async function announceWinners() {
     await bot.sendMessage(`@${CHANNEL}`, resultsMsg);
     await bot.sendMessage(
       `@${MAIN_CHANNEL}`,
-      `🎉 WINNER: ${winner.tierBadge} ${winner.user}\n💰 ${Math.floor(prizePool * 0.40 * winner.multiplier).toLocaleString()} SUNO\n\n⏰ New round in 1 min`
+      `🎉 WINNER: ${winner.tierBadge} ${winner.user}\n💰 Won ${Math.floor(prizePool * 0.40 * winner.multiplier).toLocaleString()} SUNO!\n\n🏆 See full results in @${CHANNEL}\n⏰ Next round starts in 1 minute!\n\n🎮 Type /start in the bot to play!`
     );
   } catch {}
 
@@ -926,8 +959,42 @@ async function announceWinners() {
 }
 
 // === TELEGRAM HANDLERS ===
+bot.onText(/\/start|play/i, async (msg) => {
+  const user = msg.from.username ? `@${msg.from.username}` : msg.from.first_name || "Unknown";
+  const userId = String(msg.from.id);
+
+  if (phase !== "submission") {
+    await bot.sendMessage(userId, `⚠️ ${phase} phase active. Wait for next round!`);
+    return;
+  }
+
+  const now = Date.now();
+  let timeMessage = "";
+  
+  if (cycleStartTime) {
+    const submissionEndTime = cycleStartTime + (5 * 60 * 1000);
+    const timeRemaining = Math.max(0, submissionEndTime - now);
+    const minutesLeft = Math.ceil(timeRemaining / 60000);
+    timeMessage = `\n⏰ ${minutesLeft} minute${minutesLeft !== 1 ? 's' : ''} left to join!`;
+  }
+
+  await bot.sendMessage(
+    userId,
+    `🎮 Welcome to SunoLabs Competition!\n\n💰 Prize Pool: ${treasurySUNO.toLocaleString()} SUNO${timeMessage}\n\n🎯 Choose your path:`,
+    {
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: "🎵 Upload Track & Compete", callback_data: `start_upload_${userId}` }],
+          [{ text: "🗳️ Vote Only & Earn", callback_data: `start_vote_${userId}` }]
+        ]
+      }
+    }
+  );
+});
+
 bot.on("message", async (msg) => {
-  if (msg.chat.type !== "private" || !msg.audio) return;
+  // Ignore commands and non-private chats
+  if (msg.chat.type !== "private" || !msg.audio || msg.text?.startsWith('/')) return;
 
   const user = msg.from.username ? `@${msg.from.username}` : msg.from.first_name || "Unknown";
   const userId = String(msg.from.id);
@@ -937,26 +1004,33 @@ bot.on("message", async (msg) => {
     return;
   }
 
-  const reference = Keypair.generate().publicKey;
-  const redirectLink = `https://sunolabs-redirect.onrender.com/pay?recipient=${TREASURY.toBase58()}&amount=0.01&reference=${reference.toBase58()}&userId=${userId}`;
+  // Check if user has chosen upload path
+  const uploadChoice = pendingPayments.find(p => p.userId === userId && p.choice === "upload" && !p.paid);
+  
+  if (!uploadChoice) {
+    await bot.sendMessage(
+      userId,
+      `⚠️ Please type /start and choose "Upload Track" first!`
+    );
+    return;
+  }
 
-  pendingPayments.push({
-    userId,
-    user,
-    track: msg.audio.file_id,
-    title: msg.audio.file_name || "Untitled",
-    reference: reference.toBase58(),
-    confirmed: false,
-  });
+  // Save the track
+  uploadChoice.track = msg.audio.file_id;
+  uploadChoice.title = msg.audio.file_name || "Untitled";
+  uploadChoice.user = user;
   saveState();
+
+  const reference = uploadChoice.reference;
+  const redirectLink = `https://sunolabs-redirect.onrender.com/pay?recipient=${TREASURY.toBase58()}&amount=0.01&reference=${reference}&userId=${userId}`;
 
   await bot.sendMessage(
     userId,
-    `🎧 Track received!\n\n🪙 Get SUNO tokens + enter the competition!`,
+    `🎧 Track received!\n\n🪙 Now buy SUNO tokens to enter the competition!`,
     {
       reply_markup: {
         inline_keyboard: [
-          [{ text: "🪙 Get SUNO Tokens", url: redirectLink }]
+          [{ text: "🪙 Buy SUNO & Enter Competition", url: redirectLink }]
         ]
       }
     }
@@ -965,52 +1039,64 @@ bot.on("message", async (msg) => {
 
 bot.on("callback_query", async (q) => {
   try {
-    if (q.data.startsWith("choice_")) {
-      const [, choice, userKey] = q.data.split("_");
+    // Handle initial choice (before payment)
+    if (q.data.startsWith("start_")) {
+      const [, action, userKey] = q.data.split("_");
       
-      const payment = pendingPayments.find(p => p.userId === userKey && p.userData);
-      
-      if (!payment || !payment.userData) {
-        await bot.answerCallbackQuery(q.id, { text: "⚠️ Data not found" });
+      if (phase !== "submission") {
+        await bot.answerCallbackQuery(q.id, { text: "⚠️ Submission phase ended!" });
         return;
       }
 
-      if (choice === "upload") {
-        const audio = pendingPayments.find(p => p.userId === userKey && p.track);
-        
-        if (!audio) {
-          await bot.answerCallbackQuery(q.id, { text: "⚠️ Please send your audio first!" });
-          return;
-        }
+      const reference = Keypair.generate().publicKey;
+      const redirectLink = `https://sunolabs-redirect.onrender.com/pay?recipient=${TREASURY.toBase58()}&amount=0.01&reference=${reference.toBase58()}&userId=${userKey}`;
 
-        participants.push({
-          ...payment.userData,
+      if (action === "upload") {
+        // User chose to upload track
+        pendingPayments.push({
+          userId: userKey,
           choice: "upload",
-          user: audio.user,
-          track: audio.track,
-          title: audio.title,
-          votes: 0,
-          voters: []
+          reference: reference.toBase58(),
+          confirmed: false,
+          paid: false
         });
-        
-        await bot.answerCallbackQuery(q.id, { text: "✅ Track uploaded!" });
-        await bot.sendMessage(userKey, "🎵 Your track is entered! Good luck! 🍀");
-        
-      } else if (choice === "vote") {
-        voters.push({
-          ...payment.userData,
+        saveState();
+
+        await bot.answerCallbackQuery(q.id, { text: "✅ Upload mode selected!" });
+        await bot.sendMessage(
+          userKey,
+          `🎵 Upload Track & Compete!\n\n📤 Send me your audio file now.`
+        );
+
+      } else if (action === "vote") {
+        // User chose to vote only
+        pendingPayments.push({
+          userId: userKey,
           choice: "vote",
-          votedFor: null
+          reference: reference.toBase58(),
+          confirmed: false,
+          paid: false
         });
-        
-        await bot.answerCallbackQuery(q.id, { text: "✅ Set to vote only!" });
-        await bot.sendMessage(userKey, "🗳️ You'll earn rewards if you vote for the winner!");
+        saveState();
+
+        await bot.answerCallbackQuery(q.id, { text: "✅ Vote mode selected!" });
+        await bot.sendMessage(
+          userKey,
+          `🗳️ Vote Only & Earn!\n\n🪙 Buy SUNO tokens to participate!`,
+          {
+            reply_markup: {
+              inline_keyboard: [
+                [{ text: "🪙 Buy SUNO & Join as Voter", url: redirectLink }]
+              ]
+            }
+          }
+        );
       }
       
-      saveState();
       return;
     }
 
+    // Handle voting on tracks
     if (q.data.startsWith("vote_")) {
       const [, userIdStr] = q.data.split("_");
       const targetId = String(userIdStr);
