@@ -349,9 +349,10 @@ async function startVoting() {
   
   // Announce voting in MAIN channel - tell them to go vote in submissions channel
   try {
+    const voteLink = `https://t.me/${CHANNEL}`;
     await bot.sendMessage(
       `@${MAIN_CHANNEL}`,
-      `🗳️ *Voting is Now Live!*\n💰 Prize Pool: ${prizePool.toFixed(3)} SOL\n⏰ *5 minutes to vote!*\n🏆 Winners announced after voting ends\n\n👉 Go vote now: https://t.me/${CHANNEL}`,
+      `🗳️ *Voting is Now Live!*\n💰 Prize Pool: ${prizePool.toFixed(3)} SOL\n⏰ *5 minutes to vote!*\n🏆 Winners announced after voting ends\n\nGo vote now:\n${voteLink}`,
       { parse_mode: "Markdown", disable_web_page_preview: true }
     );
     console.log("✅ Posted voting announcement to main channel");
@@ -442,7 +443,8 @@ async function announceWinners() {
   try {
     const winner = sorted[0];
     const winnerAmt = prizePool * weights[0];
-    const winnerMsg = `🎉 *Congratulations!*\n🏆 Winner: ${winner.user}\n🔥 Votes: ${winner.votes}\n💰 Prize: ${winnerAmt.toFixed(3)} SOL\n\n📊 Total Prize Pool: ${prizePool.toFixed(3)} SOL\n\n✨ Check all winners and full results:\nhttps://t.me/${CHANNEL}\n\n⏰ New round starts in 1 minute!`;
+    const resultsLink = `https://t.me/${CHANNEL}`;
+    const winnerMsg = `🎉 *Congratulations!*\n🏆 Winner: ${winner.user}\n🔥 Votes: ${winner.votes}\n💰 Prize: ${winnerAmt.toFixed(3)} SOL\n\n📊 Total Prize Pool: ${prizePool.toFixed(3)} SOL\n\nCheck all winners and full results:\n${resultsLink}\n\n⏰ New round starts in 1 minute!`;
     
     await bot.sendMessage(`@${MAIN_CHANNEL}`, winnerMsg, { parse_mode: "Markdown", disable_web_page_preview: true });
     console.log("✅ Top winner announced in main channel");
