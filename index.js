@@ -203,30 +203,34 @@ app.post("/confirm-payment", async (req, res) => {
 
     saveState();
 
-    const prizePool = potSOL * 0.5;
+    const prizePool = potSOL * 0.5; // Only 50% goes to winners
+    
+    console.log(`💰 Updated pot: ${potSOL.toFixed(3)} SOL total, ${prizePool.toFixed(3)} SOL prize pool`);
 
     // Calculate time until next announcement (next 5-min mark + 4.5 min voting)
     const now = new Date();
     const nextCycle = new Date(now);
     nextCycle.setMinutes(Math.ceil(now.getMinutes() / 5) * 5, 0, 0);
+    const votingStart = new Date(nextCycle);
     const votingEnd = new Date(nextCycle.getTime() + 4.5 * 60 * 1000);
+    const minutesUntilVoting = Math.ceil((votingStart - now) / 60000);
     const minutesUntilWinner = Math.ceil((votingEnd - now) / 60000);
 
     // Send DM confirmation with timer
     try {
       await bot.sendMessage(
         userId,
-        `✅ Payment confirmed — your track is officially entered!\n\n⏰ Winner announced in ~${minutesUntilWinner} minutes\n💰 Current prize pool: ${prizePool.toFixed(2)} SOL`
+        `✅ Payment confirmed — your track is officially entered!\n\n⏰ Voting starts in ~${minutesUntilVoting} min\n🏆 Winner announced in ~${minutesUntilWinner} min\n💰 Current prize pool: ${prizePool.toFixed(3)} SOL`
       );
     } catch (e) {
       console.error("⚠️ DM error:", e.message);
     }
 
-    // Post to channel - only show prize pool (50%)
+    // Post to channel - only show prize pool (50% of total)
     try {
       await bot.sendMessage(
         `@${CHANNEL}`,
-        `💰 New entry! Prize pool now: ${prizePool.toFixed(2)} SOL`
+        `💰 New entry! Prize pool now: ${prizePool.toFixed(3)} SOL`
       );
     } catch (e) {
       console.error("⚠️ Channel post error:", e.message);
@@ -364,12 +368,16 @@ bot.on("callback_query", async (q) => {
 
 // === POST SUBMISSIONS ===
 async function postSubmissions() {
+  console.log(`📋 Checking submissions — Phase: ${phase}, Total: ${submissions.length}, Paid: ${submissions.filter(s => s.paid).length}`);
+  
   const paidSubs = submissions.filter((s) => s.paid);
   if (!paidSubs.length) {
     console.log("🚫 No paid submissions this round.");
     return false;
   }
 
+  console.log(`✅ Found ${paidSubs.length} paid submission(s), starting voting round...`);
+  
   phase = "voting";
   nextRoundTime = Date.now();
   saveState();
@@ -380,12 +388,14 @@ async function postSubmissions() {
     await bot.sendMessage(
       `@${CHANNEL}`,
       `🎬 *Voting Round Started!*\n💰 Prize Pool: ${prizePool.toFixed(
-        2
+        3
       )} SOL\n⏰ Voting ends in ~4.5 minutes`,
       { parse_mode: "Markdown" }
     );
+    console.log("✅ Posted voting announcement");
 
     for (const s of paidSubs) {
+      console.log(`🎵 Posting submission from ${s.user}...`);
       await bot.sendAudio(`@${CHANNEL}`, s.track, {
         caption: `🎧 ${s.user} — *${s.title}*\n🔥 Votes: 0`,
         parse_mode: "Markdown",
@@ -398,10 +408,12 @@ async function postSubmissions() {
       await new Promise((r) => setTimeout(r, 1200));
     }
 
-    console.log("✅ Posted all paid submissions.");
+    console.log(`✅ Posted all ${paidSubs.length} paid submissions.`);
     return true;
   } catch (err) {
     console.error("❌ Failed to post submissions:", err.message);
+    phase = "submissions"; // Reset on error
+    saveState();
     return false;
   }
 }
@@ -490,7 +502,8 @@ async function announceWinners() {
 
 // === 5-MINUTE CYCLE (POST + RESULTS) ===
 cron.schedule("*/5 * * * *", async () => {
-  console.log("🎬 5-minute cycle triggered —", new Date().toISOString());
+  const now = new Date();
+  console.log("🎬 5-minute cycle triggered —", now.toISOString());
   
   // Clear any existing timeout
   if (votingEndTimeout) {
@@ -498,19 +511,28 @@ cron.schedule("*/5 * * * *", async () => {
     votingEndTimeout = null;
   }
   
-  const posted = await postSubmissions();
-
-  if (posted) {
-    // Schedule winner announcement after 4.5 minutes
-    votingEndTimeout = setTimeout(async () => {
-      const elapsed = nextRoundTime ? (Date.now() - nextRoundTime) / 1000 : 0;
-      if (phase !== "voting" || elapsed < 240) {
-        console.log("⏳ Skipping premature announce — voting still active.");
-        return;
-      }
-      console.log("🕒 Voting closed — Announcing winners…");
+  // Check if we should announce winners from previous round
+  if (phase === "voting" && nextRoundTime) {
+    const elapsed = (Date.now() - nextRoundTime) / 1000;
+    if (elapsed >= 270) { // 4.5 minutes = 270 seconds
+      console.log("🕒 Voting period complete — Announcing winners now...");
       await announceWinners();
-    }, 4.5 * 60 * 1000);
+      // Small delay before starting new submissions
+      await new Promise(r => setTimeout(r, 2000));
+    }
+  }
+  
+  // Now post new submissions if we're in submission phase
+  if (phase === "submissions") {
+    const posted = await postSubmissions();
+
+    if (posted) {
+      // Schedule winner announcement after 4.5 minutes
+      votingEndTimeout = setTimeout(async () => {
+        console.log("🕒 Voting closed — Announcing winners…");
+        await announceWinners();
+      }, 4.5 * 60 * 1000);
+    }
   }
 });
 
