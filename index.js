@@ -382,13 +382,14 @@ async function buyOnPumpFun(solAmount) {
       TREASURY_KEYPAIR.publicKey
     );
     
-    // Get tokens bought
+    // Get tokens bought - use uiAmount for formatted value
     const balance = await connection.getTokenAccountBalance(treasuryTokenAccount);
-    const receivedTokens = parseInt(balance.value.amount);
+    const receivedTokens = Math.floor(parseFloat(balance.value.uiAmount || 0));
     
     console.log(`🪙 Treasury received ${receivedTokens.toLocaleString()} SUNO tokens (will split next)`);
     
     return receivedTokens;
+
     
   } catch (err) {
     console.error(`❌ Pump.fun buy failed: ${err.message}`);
@@ -429,8 +430,10 @@ async function buyOnJupiter(solAmount) {
       throw new Error(`Quote failed: ${quoteData?.error || 'Unknown error'}`);
     }
     
-    const outAmount = parseInt(quoteData.outAmount);
-    console.log(`💎 Quote received: ${outAmount.toLocaleString()} SUNO (${(outAmount / 1e6).toFixed(2)}M tokens)`);
+    // Jupiter returns raw amount - convert to SUNO
+    const rawOutAmount = parseInt(quoteData.outAmount);
+    const outAmount = Math.floor(rawOutAmount / 1_000_000); // Convert to SUNO (6 decimals)
+    console.log(`💎 Quote received: ${outAmount.toLocaleString()} SUNO`);
     
     // Get swap transaction (to treasury's token account)
     console.log("🔨 Building swap transaction...");
@@ -483,7 +486,7 @@ async function buyOnJupiter(solAmount) {
     await connection.confirmTransaction(sig, 'confirmed');
     
     console.log(`✅ Jupiter swap complete!`);
-    console.log(`🪙 Treasury received ~${outAmount.toLocaleString()} SUNO tokens (will split next)`);
+    console.log(`🪙 Treasury received ${outAmount.toLocaleString()} SUNO tokens (will split next)`);
     
     return outAmount;
     
@@ -722,8 +725,7 @@ app.post("/confirm-payment", paymentLimiter, async (req, res) => {
     let totalSUNO = 0;
     console.log("\n🪙 Starting SUNO purchase with ALL remaining SOL...");
     try {
-      const rawTokenAmount = await buySUNOOnMarket(remainingSOL);
-      totalSUNO = Math.floor(rawTokenAmount / 1_000_000); // Convert from raw amount (6 decimals) to SUNO
+      totalSUNO = await buySUNOOnMarket(remainingSOL); // Functions now return formatted SUNO amount
       console.log(`\n✅ SUNO purchase SUCCESS: ${totalSUNO.toLocaleString()} SUNO tokens`);
     } catch (err) {
       console.error(`\n❌ SUNO purchase FAILED: ${err.message}`);
