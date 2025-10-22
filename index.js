@@ -373,22 +373,28 @@ async function buyOnPumpFun(solAmount) {
     
     console.log(`✅ Pump.fun buy complete!`);
     
-    // Wait for balance update
-    await new Promise(r => setTimeout(r, 3000));
-    
     // Get treasury token account
     const treasuryTokenAccount = await getAssociatedTokenAddress(
       TOKEN_MINT,
       TREASURY_KEYPAIR.publicKey
     );
     
-    // Get tokens bought - use uiAmount for formatted value
-    const balance = await connection.getTokenAccountBalance(treasuryTokenAccount);
-    const receivedTokens = Math.floor(parseFloat(balance.value.uiAmount || 0));
+    // Get balance BEFORE was stored, now get AFTER
+    // Wait for balance update
+    await new Promise(r => setTimeout(r, 3000));
     
-    console.log(`🪙 Treasury received ${receivedTokens.toLocaleString()} SUNO tokens (will split next)`);
+    const afterBalance = await connection.getTokenAccountBalance(treasuryTokenAccount);
+    const balanceAfter = Math.floor(parseFloat(afterBalance.value.uiAmount || 0));
     
-    return receivedTokens;
+    // For PumpPortal, we can't get balance before easily, so use a workaround:
+    // The transaction itself contains the output amount, but we'll use the approach
+    // of just returning what we get. The issue is this returns TOTAL balance.
+    // We need to track this differently.
+    
+    console.log(`🪙 Treasury total balance: ${balanceAfter.toLocaleString()} SUNO`);
+    console.log(`⚠️ Note: Returning total balance - caller should track balance before purchase`);
+    
+    return balanceAfter;
 
     
   } catch (err) {
@@ -724,9 +730,38 @@ app.post("/confirm-payment", paymentLimiter, async (req, res) => {
     // === BUY SUNO WITH ALL REMAINING SOL ===
     let totalSUNO = 0;
     console.log("\n🪙 Starting SUNO purchase with ALL remaining SOL...");
+    
+    // Get treasury balance BEFORE purchase
+    let balanceBefore = 0;
     try {
-      totalSUNO = await buySUNOOnMarket(remainingSOL); // Functions now return formatted SUNO amount
-      console.log(`\n✅ SUNO purchase SUCCESS: ${totalSUNO.toLocaleString()} SUNO tokens`);
+      const treasuryTokenAccount = await getAssociatedTokenAddress(
+        TOKEN_MINT,
+        TREASURY_KEYPAIR.publicKey
+      );
+      const beforeBalance = await connection.getTokenAccountBalance(treasuryTokenAccount);
+      balanceBefore = Math.floor(parseFloat(beforeBalance.value.uiAmount || 0));
+      console.log(`📊 Treasury balance BEFORE: ${balanceBefore.toLocaleString()} SUNO`);
+    } catch (e) {
+      console.log(`📊 Treasury balance BEFORE: 0 SUNO (account doesn't exist yet)`);
+      balanceBefore = 0;
+    }
+    
+    try {
+      await buySUNOOnMarket(remainingSOL); // Execute purchase
+      
+      // Get treasury balance AFTER purchase
+      const treasuryTokenAccount = await getAssociatedTokenAddress(
+        TOKEN_MINT,
+        TREASURY_KEYPAIR.publicKey
+      );
+      await new Promise(r => setTimeout(r, 2000)); // Wait for balance update
+      const afterBalance = await connection.getTokenAccountBalance(treasuryTokenAccount);
+      const balanceAfter = Math.floor(parseFloat(afterBalance.value.uiAmount || 0));
+      console.log(`📊 Treasury balance AFTER: ${balanceAfter.toLocaleString()} SUNO`);
+      
+      // Calculate actual tokens received
+      totalSUNO = balanceAfter - balanceBefore;
+      console.log(`\n✅ SUNO purchase SUCCESS: ${totalSUNO.toLocaleString()} SUNO tokens received`);
     } catch (err) {
       console.error(`\n❌ SUNO purchase FAILED: ${err.message}`);
       console.error(err.stack);
