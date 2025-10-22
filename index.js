@@ -245,12 +245,15 @@ async function transferTokensToRecipient(tokenAmount, recipientWallet) {
     }
     
     // Add transfer instruction
+    // Convert SUNO amount to raw amount (multiply by 1,000,000 for 6 decimals)
+    const rawAmount = Math.floor(tokenAmount * 1_000_000);
+    
     tx.add(
       createTransferInstruction(
         treasuryTokenAccount,
         recipientTokenAccount,
         TREASURY_KEYPAIR.publicKey,
-        tokenAmount
+        rawAmount  // Use raw amount with 6 decimals
       )
     );
     
@@ -1488,5 +1491,16 @@ app.listen(PORT, async () => {
 setInterval(() => {
   console.log(`⏰ Phase: ${phase} | Uploaders: ${participants.filter(p => p.choice === "upload").length} | Voters: ${voters.length}`);
 }, 30000);
+
+// === SELF-PING TO PREVENT RENDER SLEEP ===
+// Ping self every 10 minutes to keep service awake on free tier
+setInterval(async () => {
+  try {
+    const response = await fetch('https://sunolabs-bot.onrender.com/');
+    console.log('🏓 Self-ping successful - service kept awake');
+  } catch (e) {
+    console.log('⚠️ Self-ping failed:', e.message);
+  }
+}, 10 * 60 * 1000); // Every 10 minutes
 
 console.log("✅ SunoLabs Buy SUNO Bot initialized...");
