@@ -78,6 +78,49 @@ let phase = "submission";
 let cycleStartTime = null;
 let nextPhaseTime = null;
 
+// === PAYMENT TIMEOUT CONFIGURATION ===
+const PAYMENT_TIMEOUT = 10 * 60 * 1000; // 10 minutes timeout for payments
+
+// === CLEAN UP EXPIRED PENDING PAYMENTS ===
+function cleanupExpiredPayments() {
+  const now = Date.now();
+  const expiredPayments = pendingPayments.filter(p => {
+    const createdTime = p.createdAt || cycleStartTime || now;
+    return (now - createdTime) > PAYMENT_TIMEOUT;
+  });
+
+  if (expiredPayments.length > 0) {
+    console.log(`🧹 Cleaning up ${expiredPayments.length} expired pending payments`);
+    
+    // Remove expired payments
+    pendingPayments = pendingPayments.filter(p => {
+      const createdTime = p.createdAt || cycleStartTime || now;
+      return (now - createdTime) <= PAYMENT_TIMEOUT;
+    });
+    
+    // Notify users their payment expired
+    expiredPayments.forEach(async (payment) => {
+      try {
+        await bot.sendMessage(
+          payment.userId,
+          `⏱️ Payment Timeout\n\n` +
+          `Your payment session expired. You can upload a new track and try again!\n\n` +
+          `Type /start to begin a new submission.`
+        );
+      } catch (err) {
+        console.log(`⚠️ Could not notify user ${payment.userId} about expiration`);
+      }
+    });
+    
+    saveState();
+  }
+}
+
+// === RUN CLEANUP EVERY 2 MINUTES ===
+setInterval(() => {
+  cleanupExpiredPayments();
+}, 2 * 60 * 1000);
+
 // === TREASURY PRIZE SYSTEM ===
 const TREASURY_BONUS_CHANCE = 500; // 1 in 500 chance
 
@@ -1384,14 +1427,15 @@ bot.on("callback_query", async (q) => {
           choice: "upload",
           reference: reference.toBase58(),
           confirmed: false,
-          paid: false
+          paid: false,
+          createdAt: Date.now()
         });
         saveState();
 
         await bot.answerCallbackQuery(q.id, { text: "✅ Upload mode selected!" });
         await bot.sendMessage(
           userKey,
-          `🎵 Upload Track & Compete!\n\n📤 Send me your audio file now.`
+          `🎵 Upload Track & Compete!\n\n📤 Send me your audio file now.\n\n⏱️ You have ${Math.ceil(PAYMENT_TIMEOUT / 60000)} minutes to upload and pay.`
         );
 
       } else if (action === "vote") {
@@ -1401,14 +1445,15 @@ bot.on("callback_query", async (q) => {
           choice: "vote",
           reference: reference.toBase58(),
           confirmed: false,
-          paid: false
+          paid: false,
+          createdAt: Date.now()
         });
         saveState();
 
         await bot.answerCallbackQuery(q.id, { text: "✅ Vote mode selected!" });
         await bot.sendMessage(
           userKey,
-          `🗳️ Vote Only & Earn!\n\n🪙 Buy SUNO tokens to participate!`,
+          `🗳️ Vote Only & Earn!\n\n🪙 Buy SUNO tokens to participate!\n\n⏱️ Complete payment within ${Math.ceil(PAYMENT_TIMEOUT / 60000)} minutes.`,
           {
             reply_markup: {
               inline_keyboard: [
