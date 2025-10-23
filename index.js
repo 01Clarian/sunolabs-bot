@@ -1086,17 +1086,17 @@ async function startNewCycle() {
 
 // === VOTING ===
 async function startVoting() {
-  console.log(`📋 Starting voting — Uploaders: ${participants.filter(p => p.choice === "upload" && p.paid).length}`);
+  console.log(`📋 Starting voting — Story submitters: ${participants.filter(p => p.choice === "story" && p.paid).length}`);
   
-  const uploaders = participants.filter((p) => p.choice === "upload" && p.paid);
+  const storySubmitters = participants.filter((p) => p.choice === "story" && p.paid);
   
-  if (!uploaders.length) {
-    console.log("🚫 No uploads this round");
+  if (!storySubmitters.length) {
+    console.log("🚫 No stories this round");
     
     try {
       await bot.sendMessage(
         `@${MAIN_CHANNEL}`,
-        `⏰ No tracks submitted this round.\n\n💰 ${treasurySUNO.toLocaleString()} SUNO carries over!\n\n🎮 New round starting in 1 minute...`
+        `⏰ No stories submitted this round.\n\n💰 ${treasurySUNO.toLocaleString()} SUNO carries over!\n\n🎮 New round starting in 1 minute...`
       );
     } catch {}
     
@@ -1107,8 +1107,9 @@ async function startVoting() {
   }
 
   phase = "voting";
-  const votingDuration = calculateVotingTime();
-  const votingMinutes = Math.ceil(votingDuration / 60000);
+  // Fixed 5 minutes for story voting
+  const votingDuration = 5 * 60 * 1000;
+  const votingMinutes = 5;
   nextPhaseTime = Date.now() + votingDuration;
   saveState();
 
@@ -1117,26 +1118,25 @@ async function startVoting() {
   try {
     await bot.sendMessage(
       `@${MAIN_CHANNEL}`,
-      `🗳️ VOTING STARTED!\n\n🎵 ${uploaders.length} track${uploaders.length !== 1 ? 's' : ''} competing\n⏰ ${votingMinutes} minute${votingMinutes !== 1 ? 's' : ''} to vote!\n\n💰 Prize Pool: Loading... SUNO\n🎰 Bonus Prize: +${treasuryBonus.toLocaleString()} SUNO (1/500)\n\n🔥 Listen to tracks & vote for your favorite!\n📍 Vote here: https://t.me/${CHANNEL}\n\n🏆 Winners get 80% of prize pool\n💰 Voters who pick the winner share 20%!`
+      `🗳️ VOTING STARTED!\n\n📝 ${storySubmitters.length} stor${storySubmitters.length !== 1 ? 'ies' : 'y'} competing\n⏰ ${votingMinutes} minutes to vote!\n\n💰 Prize Pool: ${treasurySUNO.toLocaleString()} SUNO\n🎰 Bonus Prize: +${treasuryBonus.toLocaleString()} SUNO (1/500)\n\n🔥 Read stories & vote for who needs help most!\n📍 Vote here: https://t.me/${CHANNEL}\n\n🏆 Winners get 80% of prize pool\n💰 Voters who pick the winner share 20%!`
     );
   } catch {}
 
   try {
     await bot.sendMessage(
       `@${CHANNEL}`,
-      `🗳️ VOTING STARTED!\n\n💰 Prize Pool: ${treasurySUNO.toLocaleString()} SUNO\n🎰 Bonus Prize: +${treasuryBonus.toLocaleString()} SUNO (1/500)\n⏰ ${votingMinutes} minute${votingMinutes !== 1 ? 's' : ''} to vote!\n\n🎵 Listen to each track below\n🔥 Vote for your favorite!\n\n🏆 Top 5 tracks win prizes\n💎 Vote for the winner = earn rewards!`
+      `🗳️ VOTING STARTED!\n\n💰 Prize Pool: ${treasurySUNO.toLocaleString()} SUNO\n🎰 Bonus Prize: +${treasuryBonus.toLocaleString()} SUNO (1/500)\n⏰ ${votingMinutes} minutes to vote!\n\n📝 Read each story below\n🔥 Vote for who you want to help!\n\n🏆 Top 5 stories win prizes\n💎 Vote for the winner = earn rewards!`
     );
 
-    for (const p of uploaders) {
-      await bot.sendAudio(`@${CHANNEL}`, p.track, {
-        caption: `${p.tierBadge} ${p.user} — ${p.title}\n🔥 0`,
+    for (const p of storySubmitters) {
+      await bot.sendMessage(`@${CHANNEL}`, `${p.tierBadge} ${p.user}\n\n📝 "${p.story}"\n\n🔥 Votes: 0`, {
         reply_markup: {
-          inline_keyboard: [[{ text: "🔥 Vote", callback_data: `vote_${p.userId}` }]]
+          inline_keyboard: [[{ text: "🔥 Vote to Help", callback_data: `vote_${p.userId}` }]]
         }
       });
-      await new Promise((r) => setTimeout(r, 1200));
+      await new Promise((r) => setTimeout(r, 1000));
     }
-    console.log(`✅ Posted ${uploaders.length} tracks, voting for ${votingMinutes} minutes`);
+    console.log(`✅ Posted ${storySubmitters.length} stories, voting for ${votingMinutes} minutes`);
   } catch (err) {
     console.error("❌ Voting failed:", err.message);
   }
@@ -1151,10 +1151,10 @@ async function announceWinners() {
   phase = "cooldown";
   saveState();
   
-  const uploaders = participants.filter((p) => p.choice === "upload" && p.paid);
+  const storySubmitters = participants.filter((p) => p.choice === "story" && p.paid);
   
-  if (!uploaders.length) {
-    console.log("🚫 No uploads");
+  if (!storySubmitters.length) {
+    console.log("🚫 No stories");
     participants = [];
     voters = [];
     treasurySUNO = 0;
@@ -1172,7 +1172,7 @@ async function announceWinners() {
     console.log(`🎰 BONUS PRIZE HIT! Winner gets +${treasuryBonusAmount.toLocaleString()} SUNO!`);
   }
 
-  const sorted = [...uploaders].sort((a, b) => b.votes - a.votes);
+  const sorted = [...storySubmitters].sort((a, b) => b.votes - a.votes);
   const weights = [0.40, 0.25, 0.20, 0.10, 0.05];
   const numWinners = Math.min(5, sorted.length);
   
@@ -1515,11 +1515,11 @@ bot.on("callback_query", async (q) => {
       saveState();
 
       try {
-        await bot.editMessageCaption(`${entry.tierBadge} ${entry.user} — ${entry.title}\n🔥 ${entry.votes}`, {
+        await bot.editMessageText(`${entry.tierBadge} ${entry.user}\n\n📝 "${entry.story}"\n\n🔥 Votes: ${entry.votes}`, {
           chat_id: q.message.chat.id,
           message_id: q.message.message_id,
           reply_markup: {
-            inline_keyboard: [[{ text: "🔥 Vote", callback_data: `vote_${entry.userId}` }]]
+            inline_keyboard: [[{ text: "🔥 Vote to Help", callback_data: `vote_${entry.userId}` }]]
           }
         });
       } catch {}
