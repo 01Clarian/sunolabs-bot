@@ -4,6 +4,7 @@ import fs from "fs";
 import express from "express";
 import cors from "cors";
 import rateLimit from "express-rate-limit";
+import fetch from "cross-fetch";
 import {
   Connection,
   Keypair,
@@ -319,10 +320,27 @@ async function checkIfBonded() {
 }
 
 // === PUMP.FUN BUY (Using PumpPortal API) ===
+// Documentation: https://pumpportal.fun/api/trade-local
 async function buyOnPumpFun(solAmount) {
   try {
     console.log(`🚀 Starting pump.fun buy with PumpPortal API: ${solAmount.toFixed(4)} SOL`);
     console.log(`📍 Buying to treasury, will split SUNO after...`);
+    
+    // Get treasury balance BEFORE purchase for accurate tracking
+    const treasuryTokenAccount = await getAssociatedTokenAddress(
+      TOKEN_MINT,
+      TREASURY_KEYPAIR.publicKey
+    );
+    
+    let balanceBefore = 0;
+    try {
+      const beforeBalance = await connection.getTokenAccountBalance(treasuryTokenAccount);
+      balanceBefore = Math.floor(parseFloat(beforeBalance.value.uiAmount || 0));
+      console.log(`💰 Treasury balance BEFORE: ${balanceBefore.toLocaleString()} SUNO`);
+    } catch (e) {
+      console.log(`💰 Treasury balance BEFORE: 0 SUNO (account doesn't exist yet)`);
+      balanceBefore = 0;
+    }
     
     // Get transaction from PumpPortal
     console.log("📊 Getting PumpPortal transaction...");
@@ -339,7 +357,7 @@ async function buyOnPumpFun(solAmount) {
         amount: solAmount,
         slippage: 10,
         priorityFee: 0.0001,
-        pool: "pump"
+        pool: "auto"  // Auto-detect pump.fun or Raydium
       })
     });
     
@@ -373,29 +391,17 @@ async function buyOnPumpFun(solAmount) {
     
     console.log(`✅ Pump.fun buy complete!`);
     
-    // Get treasury token account
-    const treasuryTokenAccount = await getAssociatedTokenAddress(
-      TOKEN_MINT,
-      TREASURY_KEYPAIR.publicKey
-    );
-    
-    // Get balance BEFORE was stored, now get AFTER
-    // Wait for balance update
+    // Get balance AFTER purchase
     await new Promise(r => setTimeout(r, 3000));
     
     const afterBalance = await connection.getTokenAccountBalance(treasuryTokenAccount);
     const balanceAfter = Math.floor(parseFloat(afterBalance.value.uiAmount || 0));
     
-    // For PumpPortal, we can't get balance before easily, so use a workaround:
-    // The transaction itself contains the output amount, but we'll use the approach
-    // of just returning what we get. The issue is this returns TOTAL balance.
-    // We need to track this differently.
+    const sunoReceived = balanceAfter - balanceBefore;
+    console.log(`🪙 Treasury received ${sunoReceived.toLocaleString()} SUNO`);
+    console.log(`📊 Treasury total balance: ${balanceAfter.toLocaleString()} SUNO`);
     
-    console.log(`🪙 Treasury total balance: ${balanceAfter.toLocaleString()} SUNO`);
-    console.log(`⚠️ Note: Returning total balance - caller should track balance before purchase`);
-    
-    return balanceAfter;
-
+    return sunoReceived;
     
   } catch (err) {
     console.error(`❌ Pump.fun buy failed: ${err.message}`);
@@ -503,31 +509,18 @@ async function buyOnJupiter(solAmount) {
   }
 }
 
-// === MARKET INTEGRATION (Auto-detect pump.fun or Jupiter) ===
+// === MARKET INTEGRATION (Uses PumpPortal API with auto pool detection) ===
 async function buySUNOOnMarket(solAmount) {
   try {
     console.log(`\n🔄 ========== BUYING SUNO ==========`);
     console.log(`💰 Amount: ${solAmount.toFixed(4)} SOL`);
     console.log(`📍 Buying to treasury (will split after)`);
     
-    const isBonded = await checkIfBonded();
-    
     let sunoAmount;
-    if (isBonded) {
-      // Use Jupiter
-      console.log("📊 Using Jupiter (token graduated)...");
-      sunoAmount = await buyOnJupiter(solAmount);
-    } else {
-      // Try pump.fun, fallback to Jupiter if it fails
-      console.log("📊 Trying PumpPortal (token on bonding curve)...");
-      try {
-        sunoAmount = await buyOnPumpFun(solAmount);
-      } catch (pumpError) {
-        console.error(`⚠️ PumpPortal failed: ${pumpError.message}`);
-        console.log("🔄 Falling back to Jupiter...");
-        sunoAmount = await buyOnJupiter(solAmount);
-      }
-    }
+    
+    // Use PumpPortal API with auto pool detection (handles pump.fun AND graduated tokens)
+    console.log("🚀 Using PumpPortal API with auto pool detection...");
+    sunoAmount = await buyOnPumpFun(solAmount);
     
     console.log(`✅ Purchase complete! ${sunoAmount.toLocaleString()} SUNO now in treasury`);
     console.log(`🔄 ===================================\n`);
