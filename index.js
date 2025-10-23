@@ -49,6 +49,9 @@ process.on("unhandledRejection", (reason, promise) => {
 const CHANNEL = "sunolabs_submissions";
 const MAIN_CHANNEL = "sunolabs";
 
+// === STORY CONFIGURATION ===
+const MAX_STORY_LENGTH = 400; // Character limit for stories (roughly 3 sentences)
+
 // === SOLANA CONFIG ===
 const RPC_URL = process.env.SOLANA_RPC_URL;
 if (!RPC_URL) {
@@ -879,10 +882,10 @@ app.post("/confirm-payment", paymentLimiter, async (req, res) => {
     const payment = pendingPayments.find(p => p.reference === reference);
     const userChoice = payment?.choice || "vote"; // Default to vote if somehow missing
 
-    if (userChoice === "upload") {
-      // Register as competitor
-      if (!payment.track) {
-        console.log("⚠️ User chose upload but didn't send audio - defaulting to vote");
+    if (userChoice === "story") {
+      // Register as story submitter
+      if (!payment.story) {
+        console.log("⚠️ User chose story but didn't send text - defaulting to vote");
         voters.push({
           ...userData,
           choice: "vote",
@@ -892,7 +895,7 @@ app.post("/confirm-payment", paymentLimiter, async (req, res) => {
         try {
           await bot.sendMessage(
             userId,
-            `✅ Payment complete!\n\n🪙 ${userSUNO.toLocaleString()} SUNO sent!\n${tier.badge} ${tier.name} tier (${(retention * 100).toFixed(0)}% retention)\n💰 ${multiplier}x prize multiplier\n\n⚠️ No audio found - registered as voter.\n🗳️ Vote during voting phase to earn rewards!`
+            `✅ Payment complete!\n\n🪙 ${userSUNO.toLocaleString()} SUNO sent!\n${tier.badge} ${tier.name} tier (${(retention * 100).toFixed(0)}% retention)\n💰 ${multiplier}x prize multiplier\n\n⚠️ No story found - registered as voter.\n🗳️ Vote during voting phase to earn rewards!`
           );
         } catch (e) {
           console.error("⚠️ DM error:", e.message);
@@ -900,11 +903,9 @@ app.post("/confirm-payment", paymentLimiter, async (req, res) => {
       } else {
         participants.push({
           ...userData,
-          choice: "upload",
+          choice: "story",
           user: payment.user,
-          track: payment.track,
-          title: payment.title,
-          trackDuration: payment.trackDuration || 0,
+          story: payment.story,
           votes: 0,
           voters: []
         });
@@ -922,7 +923,7 @@ app.post("/confirm-payment", paymentLimiter, async (req, res) => {
         try {
           await bot.sendMessage(
             userId,
-            `✅ Track entered!\n\n🪙 ${userSUNO.toLocaleString()} SUNO sent!\n${tier.badge} ${tier.name} tier (${(retention * 100).toFixed(0)}% retention)\n💰 ${multiplier}x prize multiplier\n\n🎵 Your track "${payment.title}" is in the competition!${timeUntilVote}\n🍀 Good luck!`
+            `✅ Story entered!\n\n🪙 ${userSUNO.toLocaleString()} SUNO sent!\n${tier.badge} ${tier.name} tier (${(retention * 100).toFixed(0)}% retention)\n💰 ${multiplier}x prize multiplier\n\n📝 Your story is in the competition!${timeUntilVote}\n🍀 Good luck!`
           );
         } catch (e) {
           console.error("⚠️ DM error:", e.message);
@@ -932,7 +933,7 @@ app.post("/confirm-payment", paymentLimiter, async (req, res) => {
         try {
           await bot.sendMessage(
             `@${MAIN_CHANNEL}`,
-            `💰 +${roundPool.toLocaleString()} SUNO added to prize pool!\n🎵 ${payment.user} entered with "${payment.title}"\n\n💎 Current Pool: ${treasurySUNO.toLocaleString()} SUNO`
+            `💰 +${roundPool.toLocaleString()} SUNO added to prize pool!\n📝 ${payment.user} shared their story\n\n💎 Current Pool: ${treasurySUNO.toLocaleString()} SUNO`
           );
         } catch (e) {
           console.error("⚠️ Main channel announcement error:", e.message);
@@ -941,7 +942,7 @@ app.post("/confirm-payment", paymentLimiter, async (req, res) => {
         try {
           await bot.sendMessage(
             `@${CHANNEL}`,
-            `💰 +${roundPool.toLocaleString()} SUNO added!\n🎵 ${payment.user} - "${payment.title}"\n\n💎 Pool: ${treasurySUNO.toLocaleString()} SUNO`
+            `💰 +${roundPool.toLocaleString()} SUNO added!\n📝 ${payment.user} - New story submitted\n\n💎 Pool: ${treasurySUNO.toLocaleString()} SUNO`
           );
         } catch (e) {
           console.error("⚠️ Submissions channel announcement error:", e.message);
@@ -1285,11 +1286,11 @@ bot.onText(/\/start|play/i, async (msg) => {
 
   await bot.sendMessage(
     userId,
-    `🎮 Welcome to SunoLabs Competition!\n\n💰 Prize Pool: ${treasurySUNO.toLocaleString()} SUNO\n🎰 Bonus Prize: +${treasuryBonus.toLocaleString()} SUNO (1/500)${timeMessage}\n\n🎯 Choose your path:`,
+    `🎮 Welcome to SunoLabs Fundraiser!\n\n💰 Prize Pool: ${treasurySUNO.toLocaleString()} SUNO\n🎰 Bonus Prize: +${treasuryBonus.toLocaleString()} SUNO (1/500)${timeMessage}\n\n🎯 Choose your path:`,
     {
       reply_markup: {
         inline_keyboard: [
-          [{ text: "🎵 Upload Track & Compete", callback_data: `start_upload_${userId}` }],
+          [{ text: "📝 Share Your Story & Compete", callback_data: `start_story_${userId}` }],
           [{ text: "🗳️ Vote Only & Earn", callback_data: `start_vote_${userId}` }]
         ]
       }
@@ -1303,8 +1304,8 @@ bot.on("message", async (msg) => {
 
   const userId = String(msg.from.id);
   
-  // Handle audio files (track uploads)
-  if (msg.audio) {
+  // Handle text messages (story submissions)
+  if (msg.text && !msg.text.match(/^\/start|^play$/i)) {
     const user = msg.from.username ? `@${msg.from.username}` : msg.from.first_name || "Unknown";
 
     if (phase !== "submission") {
@@ -1312,33 +1313,54 @@ bot.on("message", async (msg) => {
       return;
     }
 
-    // === AUDIO FILE VALIDATION ===
-    const validTypes = ['.mp3', '.m4a', '.ogg', '.wav', '.flac', '.aac'];
-    const fileName = msg.audio.file_name || "";
-    if (fileName && !validTypes.some(ext => fileName.toLowerCase().endsWith(ext))) {
-      await bot.sendMessage(
-        userId,
-        `⚠️ Invalid audio format!\n\n✅ Accepted: MP3, M4A, OGG, WAV, FLAC, AAC\n❌ Your file: ${fileName}\n\nPlease upload a valid audio file.`
-      );
-      return;
-    }
-
-    // Check if user has chosen upload path
-    const uploadChoice = pendingPayments.find(p => p.userId === userId && p.choice === "upload" && !p.paid);
+    // Check if user has chosen story path
+    const storyChoice = pendingPayments.find(p => p.userId === userId && p.choice === "story" && !p.paid);
     
-    if (!uploadChoice) {
+    if (!storyChoice) {
+      // Not in story mode, send help message
+      const now = Date.now();
+      let phaseInfo = "";
+      
+      if (phase === "submission" && cycleStartTime) {
+        const submissionEndTime = cycleStartTime + (5 * 60 * 1000);
+        const timeRemaining = Math.max(0, submissionEndTime - now);
+        const minutesLeft = Math.ceil(timeRemaining / 60000);
+        phaseInfo = `\n\n⏰ Current round ends in ${minutesLeft} minute${minutesLeft !== 1 ? 's' : ''}!`;
+      }
+      
       await bot.sendMessage(
         userId,
-        `⚠️ Please type /start and choose "Upload Track" first!`
+        `👋 Hi! Welcome to SunoLabs Fundraiser!\n\n🎮 To play, type:\n/start\n\nThen choose:\n📝 Share your story & compete for SUNO prizes\n🗳️ Vote only & earn SUNO rewards${phaseInfo}`
       );
       return;
     }
 
-    // === PREVENT MULTIPLE UPLOADS ===
-    if (uploadChoice.track) {
+    // === CHARACTER LENGTH VALIDATION ===
+    const storyText = msg.text.trim();
+    const charCount = storyText.length;
+    
+    if (charCount > MAX_STORY_LENGTH) {
+      const overBy = charCount - MAX_STORY_LENGTH;
       await bot.sendMessage(
         userId,
-        `⚠️ You already uploaded a track!\n\n🎵 ${uploadChoice.title}\n\nWait for payment to complete or start a new round.`
+        `⚠️ Story too long!\n\n📏 Your story: ${charCount} characters\n✅ Maximum: ${MAX_STORY_LENGTH} characters\n❌ Over by: ${overBy} characters\n\nPlease shorten your story and try again (about 3 sentences).`
+      );
+      return;
+    }
+
+    if (charCount < 20) {
+      await bot.sendMessage(
+        userId,
+        `⚠️ Story too short!\n\n📏 Your story: ${charCount} characters\n✅ Minimum: 20 characters\n\nPlease write a bit more about why you need funds.`
+      );
+      return;
+    }
+
+    // === PREVENT MULTIPLE SUBMISSIONS ===
+    if (storyChoice.story) {
+      await bot.sendMessage(
+        userId,
+        `⚠️ You already submitted a story!\n\n📝 "${storyChoice.story.substring(0, 50)}..."\n\nWait for payment to complete or start a new round.`
       );
       return;
     }
@@ -1348,29 +1370,26 @@ bot.on("message", async (msg) => {
     if (alreadyParticipated) {
       await bot.sendMessage(
         userId,
-        `⚠️ You're already in this round!\n\n🎵 ${alreadyParticipated.title}\n\nOne entry per round.`
+        `⚠️ You're already in this round!\n\n📝 ${alreadyParticipated.story.substring(0, 50)}...\n\nOne entry per round.`
       );
       return;
     }
 
-    // Save the track with duration
-    uploadChoice.track = msg.audio.file_id;
-    uploadChoice.title = msg.audio.file_name || msg.audio.title || "Untitled";
-    uploadChoice.trackDuration = msg.audio.duration || 0;  // Duration in seconds
-    uploadChoice.user = user;
+    // Save the story
+    storyChoice.story = storyText;
+    storyChoice.user = user;
     saveState();
 
-    const reference = uploadChoice.reference;
-    const redirectLink = `https://sunolabs-redirect.onrender.com/pay?recipient=${TREASURY.toBase58()}&amount=0.01&reference=${reference}&userId=${userId}`;
+    const reference = storyChoice.reference;
+    const redirectLink = `https://sunolabs-redirect.onrender.com/pay?recipient=${TREASURY.toBase58()}&amount=0.01&reference=${reference.toBase58()}&userId=${userId}`;
 
-    const durationText = uploadChoice.trackDuration > 0 ? ` (${uploadChoice.trackDuration}s)` : '';
     await bot.sendMessage(
       userId,
-      `🎧 Track received!${durationText}\n\n🪙 Now buy SUNO tokens to enter the competition!`,
+      `✅ Story received! (${charCount}/${MAX_STORY_LENGTH} characters)\n\n📝 "${storyText.substring(0, 100)}${storyText.length > 100 ? '...' : ''}"\n\n🪙 Now buy SUNO tokens to enter the fundraiser!`,
       {
         reply_markup: {
           inline_keyboard: [
-            [{ text: "🪙 Buy SUNO & Enter Competition", url: redirectLink }]
+            [{ text: "🪙 Buy SUNO & Enter Fundraiser", url: redirectLink }]
           ]
         }
       }
@@ -1420,11 +1439,11 @@ bot.on("callback_query", async (q) => {
       const reference = Keypair.generate().publicKey;
       const redirectLink = `https://sunolabs-redirect.onrender.com/pay?recipient=${TREASURY.toBase58()}&amount=0.01&reference=${reference.toBase58()}&userId=${userKey}`;
 
-      if (action === "upload") {
-        // User chose to upload track
+      if (action === "story") {
+        // User chose to submit story
         pendingPayments.push({
           userId: userKey,
-          choice: "upload",
+          choice: "story",
           reference: reference.toBase58(),
           confirmed: false,
           paid: false,
@@ -1432,10 +1451,10 @@ bot.on("callback_query", async (q) => {
         });
         saveState();
 
-        await bot.answerCallbackQuery(q.id, { text: "✅ Upload mode selected!" });
+        await bot.answerCallbackQuery(q.id, { text: "✅ Story mode selected!" });
         await bot.sendMessage(
           userKey,
-          `🎵 Upload Track & Compete!\n\n📤 Send me your audio file now.\n\n⏱️ You have ${Math.ceil(PAYMENT_TIMEOUT / 60000)} minutes to upload and pay.`
+          `📝 Share Your Story!\n\n✍️ Tell us why you need funds (max ${MAX_STORY_LENGTH} characters, about 3 sentences).\n\nType your story and hit send!\n\n⏱️ You have ${Math.ceil(PAYMENT_TIMEOUT / 60000)} minutes to submit and pay.`
         );
 
       } else if (action === "vote") {
