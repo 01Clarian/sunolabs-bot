@@ -1381,7 +1381,7 @@ bot.on("message", async (msg) => {
     saveState();
 
     const reference = storyChoice.reference;
-    const redirectLink = `https://sunolabs-redirect.onrender.com/pay?recipient=${TREASURY.toBase58()}&amount=0.01&reference=${reference.toBase58()}&userId=${userId}`;
+    const redirectLink = `https://sunolabs-redirect.onrender.com/pay?recipient=${TREASURY.toBase58()}&amount=0.01&reference=${reference}&userId=${userId}`;
 
     await bot.sendMessage(
       userId,
