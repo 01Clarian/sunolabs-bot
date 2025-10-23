@@ -89,7 +89,7 @@ function cleanupExpiredPayments() {
   const now = Date.now();
   const expiredPayments = pendingPayments.filter(p => {
     const createdTime = p.createdAt || cycleStartTime || now;
-    return (now - createdTime) > PAYMENT_TIMEOUT;
+    return (now - createdTime) > PAYMENT_TIMEOUT && !p.paid;  // Don't expire if already paid
   });
 
   if (expiredPayments.length > 0) {
@@ -98,16 +98,16 @@ function cleanupExpiredPayments() {
     // Remove expired payments
     pendingPayments = pendingPayments.filter(p => {
       const createdTime = p.createdAt || cycleStartTime || now;
-      return (now - createdTime) <= PAYMENT_TIMEOUT;
+      return (now - createdTime) <= PAYMENT_TIMEOUT || p.paid;  // Keep if paid even if expired
     });
     
-    // Notify users their payment expired
+    // Notify users their payment expired (only if not paid)
     expiredPayments.forEach(async (payment) => {
       try {
         await bot.sendMessage(
           payment.userId,
           `⏱️ Payment Timeout\n\n` +
-          `Your payment session expired. You can upload a new track and try again!\n\n` +
+          `Your payment session expired. You can submit a new story and try again!\n\n` +
           `Type /start to begin a new submission.`
         );
       } catch (err) {
