@@ -1358,9 +1358,20 @@ bot.on("message", async (msg) => {
 
     // === PREVENT MULTIPLE SUBMISSIONS ===
     if (storyChoice.story) {
+      // Story already exists - resend payment link in case it wasn't sent before
+      const reference = storyChoice.reference;
+      const redirectLink = `https://sunolabs-redirect.onrender.com/pay?recipient=${TREASURY.toBase58()}&amount=0.01&reference=${reference}&userId=${userId}`;
+      
       await bot.sendMessage(
         userId,
-        `⚠️ You already submitted a story!\n\n📝 "${storyChoice.story.substring(0, 50)}..."\n\nWait for payment to complete or start a new round.`
+        `✅ Story already submitted!\n\n📝 "${storyChoice.story.substring(0, 100)}${storyChoice.story.length > 100 ? '...' : ''}"\n\n🪙 Complete your payment to enter the fundraiser!`,
+        {
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: "🪙 Buy SUNO & Enter Fundraiser", url: redirectLink }]
+            ]
+          }
+        }
       );
       return;
     }
